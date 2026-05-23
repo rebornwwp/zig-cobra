@@ -14,4 +14,6 @@ pub fn appendActiveHelp(gpa: std.mem.Allocator, comp_array: []Completion, active
     return try result.toOwnedSlice(gpa);
 }
 
-pub fn getActiveHelpConfig(_: *const anyopaque, _: std.mem.Allocator) ![]const u8 { return ""; }
+pub fn getActiveHelpConfig(_: *const anyopaque, _: std.mem.Allocator) ![]const u8 {
+    return "";
+}

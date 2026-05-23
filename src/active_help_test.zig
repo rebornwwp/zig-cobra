@@ -9,7 +9,12 @@ const gpa = std.testing.allocator;
 test "appendActiveHelp adds marker" {
     var comps = [2]Completion{ "option1", "option2" };
     const result = try active_help.appendActiveHelp(gpa, &comps, "help text");
-    defer gpa.free(result);
+    defer {
+        // The last element is a heap-allocated active help string.
+        // Elements 0..len-1 reference the input comps and must not be freed.
+        gpa.free(result[result.len - 1]);
+        gpa.free(result);
+    }
     try std.testing.expect(result.len == 3);
     try std.testing.expectEqualStrings("option1", result[0]);
     try std.testing.expectEqualStrings("option2", result[1]);
@@ -19,7 +24,11 @@ test "appendActiveHelp adds marker" {
 test "appendActiveHelp with empty comps" {
     var comps: [0]Completion = .{};
     const result = try active_help.appendActiveHelp(gpa, &comps, "help");
-    defer gpa.free(result);
+    defer {
+        // The last element is a heap-allocated active help string.
+        gpa.free(result[result.len - 1]);
+        gpa.free(result);
+    }
     try std.testing.expect(result.len == 1);
 }
 

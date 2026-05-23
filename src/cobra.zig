@@ -97,8 +97,14 @@ pub fn rpad(gpa: std.mem.Allocator, s: []const u8, padding: usize) ![]const u8 {
 pub fn levenshteinDistance(s: []const u8, t: []const u8, ignore_case: bool) usize {
     var s_buf: [1024]u8 = undefined;
     var t_buf: [1024]u8 = undefined;
-    const sn = if (ignore_case) blk: { _ = std.ascii.lowerString(&s_buf, s); break :blk s_buf[0..s.len]; } else s;
-    const tn = if (ignore_case) blk: { _ = std.ascii.lowerString(&t_buf, t); break :blk t_buf[0..t.len]; } else t;
+    const sn = if (ignore_case) blk: {
+        _ = std.ascii.lowerString(&s_buf, s);
+        break :blk s_buf[0..s.len];
+    } else s;
+    const tn = if (ignore_case) blk: {
+        _ = std.ascii.lowerString(&t_buf, t);
+        break :blk t_buf[0..t.len];
+    } else t;
     const n = sn.len;
     const m = tn.len;
     var d: [1025][1025]usize = undefined;

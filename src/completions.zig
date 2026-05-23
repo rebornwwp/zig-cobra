@@ -16,8 +16,12 @@ pub const CompletionOptions = struct {
 };
 
 pub const ShellCompDirective = packed struct(u8) {
-    e: bool = false, nospace: bool = false, nofilecomp: bool = false,
-    filterfile: bool = false, filterdirs: bool = false, keeporder: bool = false,
+    e: bool = false,
+    nospace: bool = false,
+    nofilecomp: bool = false,
+    filterfile: bool = false,
+    filterdirs: bool = false,
+    keeporder: bool = false,
     _: u2 = 0,
     pub const error_flag = ShellCompDirective{ .e = true };
     pub const no_space = ShellCompDirective{ .nospace = true };
@@ -28,14 +32,17 @@ pub const ShellCompDirective = packed struct(u8) {
     pub const default = ShellCompDirective{};
 };
 
-pub fn completionWithDesc(choice: []const u8, _: []const u8) Completion { return choice; }
+pub fn completionWithDesc(choice: []const u8, _: []const u8) Completion {
+    return choice;
+}
 
 pub fn noFileCompletions(_: *Command, _: [][]const u8, _: []const u8) anyerror!CompResult {
     return CompResult{ .completions = &.{}, .directive = .no_file_comp };
 }
 
 pub fn fixedCompletions(choices: []const Completion, directive: ShellCompDirective) CompletionFunc {
-    _ = choices; _ = directive;
+    _ = choices;
+    _ = directive;
     return &fixedReturn;
 }
 

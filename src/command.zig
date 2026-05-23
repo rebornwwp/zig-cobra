@@ -1,6 +1,7 @@
 //! Command is the core of cobra - a command for your CLI application.
 //! Maps 1:1 from cobra/command.go
 const std = @import("std");
+pub const pflag = @import("pflag");
 
 const Completion = @import("completions.zig").Completion;
 const ShellCompDirective = @import("completions.zig").ShellCompDirective;
@@ -86,26 +87,45 @@ pub const Command = struct {
     out_writer: ?*std.Io.Writer = null,
     err_writer: ?*std.Io.Writer = null,
     in_reader: ?*std.Io.Reader = null,
-    flags: ?*FlagSet = null,
-    pflags: ?*FlagSet = null,
-    lflags: ?*FlagSet = null,
-    iflags: ?*FlagSet = null,
-    parents_pflags: ?*FlagSet = null,
+    flags: ?*pflag.FlagSet = null,
+    pflags: ?*pflag.FlagSet = null,
+    lflags: ?*pflag.FlagSet = null,
+    iflags: ?*pflag.FlagSet = null,
+    parents_pflags: ?*pflag.FlagSet = null,
     flag_error_buf: ?*std.ArrayListUnmanaged(u8) = null,
     commands_max_use_len: usize = 0,
     commands_max_command_path_len: usize = 0,
     commands_max_name_len: usize = 0,
 
     // ─── Methods ───
-    pub fn setArgs(self: *Command, a: []const []const u8) void { self.args_slice = a; }
-    pub fn setOut(self: *Command, w: *std.Io.Writer) void { self.out_writer = w; }
-    pub fn setErr(self: *Command, w: *std.Io.Writer) void { self.err_writer = w; }
-    pub fn setIn(self: *Command, r: *std.Io.Reader) void { self.in_reader = r; }
-    pub fn setOutput(self: *Command, w: *std.Io.Writer) void { self.out_writer = w; self.err_writer = w; }
-    pub fn setUsageFunc(self: *Command, f: UsageFuncType) void { self.usage_func = f; }
-    pub fn setFlagErrorFunc(self: *Command, f: FlagErrorFuncType) void { self.flag_error_func = f; }
-    pub fn setHelpFunc(self: *Command, f: HelpFuncType) void { self.help_func = f; }
-    pub fn setHelpCommand(self: *Command, cmd: *Command) void { self.help_command = cmd; }
+    pub fn setArgs(self: *Command, a: []const []const u8) void {
+        self.args_slice = a;
+    }
+    pub fn setOut(self: *Command, w: *std.Io.Writer) void {
+        self.out_writer = w;
+    }
+    pub fn setErr(self: *Command, w: *std.Io.Writer) void {
+        self.err_writer = w;
+    }
+    pub fn setIn(self: *Command, r: *std.Io.Reader) void {
+        self.in_reader = r;
+    }
+    pub fn setOutput(self: *Command, w: *std.Io.Writer) void {
+        self.out_writer = w;
+        self.err_writer = w;
+    }
+    pub fn setUsageFunc(self: *Command, f: UsageFuncType) void {
+        self.usage_func = f;
+    }
+    pub fn setFlagErrorFunc(self: *Command, f: FlagErrorFuncType) void {
+        self.flag_error_func = f;
+    }
+    pub fn setHelpFunc(self: *Command, f: HelpFuncType) void {
+        self.help_func = f;
+    }
+    pub fn setHelpCommand(self: *Command, cmd: *Command) void {
+        self.help_command = cmd;
+    }
     pub fn setHelpCommandGroupID(self: *Command, gid: []const u8) void {
         if (self.help_command) |hc| hc.group_id = gid;
         self.help_command_group_id = gid;
@@ -113,7 +133,9 @@ pub const Command = struct {
     pub fn setCompletionCommandGroupID(self: *Command, gid: []const u8) void {
         self.root().completion_command_group_id = gid;
     }
-    pub fn setErrPrefix(self: *Command, s: []const u8) void { self.err_prefix = s; }
+    pub fn setErrPrefix(self: *Command, s: []const u8) void {
+        self.err_prefix = s;
+    }
 
     pub fn errOrStderr(self: *Command) *std.Io.Writer {
         if (self.err_writer) |w| return w;
@@ -130,8 +152,12 @@ pub const Command = struct {
         if (self.parent) |p| return p.inOrStdin();
         return undefined;
     }
-    pub fn hasParent(self: *const Command) bool { return self.parent != null; }
-    pub fn getParent(self: *Command) ?*Command { return self.parent; }
+    pub fn hasParent(self: *const Command) bool {
+        return self.parent != null;
+    }
+    pub fn getParent(self: *Command) ?*Command {
+        return self.parent;
+    }
     pub fn root(self: *Command) *Command {
         if (self.hasParent()) return self.parent.?.root();
         return self;
@@ -141,7 +167,9 @@ pub const Command = struct {
         if (std.mem.indexOfScalar(u8, self.use, ' ')) |i| return self.use[0..i];
         return self.use;
     }
-    pub fn displayName(self: *const Command) []const u8 { return self.name(); }
+    pub fn displayName(self: *const Command) []const u8 {
+        return self.name();
+    }
 
     pub fn commandPath(self: *Command) []const u8 {
         if (self.hasParent()) {
@@ -153,8 +181,11 @@ pub const Command = struct {
     pub fn hasAlias(self: *const Command, s: []const u8) bool {
         const enable_case_insensitive = @import("cobra.zig").enable_case_insensitive;
         for (self.aliases) |a| {
-            if (enable_case_insensitive) { if (std.ascii.eqlIgnoreCase(a, s)) return true; }
-            else { if (std.mem.eql(u8, a, s)) return true; }
+            if (enable_case_insensitive) {
+                if (std.ascii.eqlIgnoreCase(a, s)) return true;
+            } else {
+                if (std.mem.eql(u8, a, s)) return true;
+            }
         }
         return false;
     }
@@ -164,9 +195,15 @@ pub const Command = struct {
         return "";
     }
 
-    pub fn runnable(self: *const Command) bool { return self.run != null or self.run_e != null; }
-    pub fn hasSubCommands(self: *const Command) bool { return self.commands.items.len > 0; }
-    pub fn hasExample(self: *const Command) bool { return self.example.len > 0; }
+    pub fn runnable(self: *const Command) bool {
+        return self.run != null or self.run_e != null;
+    }
+    pub fn hasSubCommands(self: *const Command) bool {
+        return self.commands.items.len > 0;
+    }
+    pub fn hasExample(self: *const Command) bool {
+        return self.example.len > 0;
+    }
 
     pub fn isAvailableCommand(self: *const Command) bool {
         if (self.deprecated.len != 0 or self.hidden) return false;
@@ -215,7 +252,9 @@ pub const Command = struct {
         }
     }
 
-    pub fn groups(self: *Command) []*Group { return self.commandgroups.items; }
+    pub fn groups(self: *Command) []*Group {
+        return self.commandgroups.items;
+    }
     pub fn containsGroup(self: *const Command, gid: []const u8) bool {
         for (self.commandgroups.items) |g| if (std.mem.eql(u8, g.id, gid)) return true;
         return false;
@@ -234,7 +273,11 @@ pub const Command = struct {
         defer nc.deinit(gpa);
         for (self.commands.items) |c| {
             var skip = false;
-            for (cmds) |rc| if (c == rc) { c.parent = null; skip = true; break; };
+            for (cmds) |rc| if (c == rc) {
+                c.parent = null;
+                skip = true;
+                break;
+            };
             if (!skip) nc.append(gpa, c) catch unreachable;
         }
         self.commands.deinit(gpa);
@@ -245,7 +288,10 @@ pub const Command = struct {
     }
     pub fn resetCommands(self: *Command, gpa: std.mem.Allocator) void {
         self.commands.deinit(gpa);
-        self.parent = null; self.commands = .empty; self.help_command = null; self.parents_pflags = null;
+        self.parent = null;
+        self.commands = .empty;
+        self.help_command = null;
+        self.parents_pflags = null;
     }
     pub fn deinit(self: *Command, gpa: std.mem.Allocator) void {
         for (self.commands.items) |c| c.deinit(gpa);
@@ -277,7 +323,10 @@ pub const Command = struct {
     }
 
     pub fn visitParents(self: *Command, fn_ptr: *const fn (*Command) void) void {
-        if (self.hasParent()) { fn_ptr(self.parent.?); self.parent.?.visitParents(fn_ptr); }
+        if (self.hasParent()) {
+            fn_ptr(self.parent.?);
+            self.parent.?.visitParents(fn_ptr);
+        }
     }
 
     pub fn errPrefix(self: *const Command) []const u8 {
@@ -286,12 +335,27 @@ pub const Command = struct {
         return "Error:";
     }
 
-    pub fn print(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void { _ = self; _ = io; _ = fmt_str; _ = args; }
-    pub fn println(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void { self.print(io, fmt_str ++ "\n", args); }
-    pub fn printf(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void { self.print(io, fmt_str, args); }
-    pub fn printErr(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void { self.print(io, fmt_str, args); }
-    pub fn printErrln(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void { self.printErr(io, fmt_str ++ "\n", args); }
-    pub fn printErrf(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void { self.printErr(io, fmt_str, args); }
+    pub fn print(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
+        if (self.out_writer) |w| {
+            w.print(fmt_str, args) catch {};
+        }
+        _ = io;
+    }
+    pub fn println(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
+        self.print(io, fmt_str ++ "\n", args);
+    }
+    pub fn printf(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
+        self.print(io, fmt_str, args);
+    }
+    pub fn printErr(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
+        self.print(io, fmt_str, args);
+    }
+    pub fn printErrln(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
+        self.printErr(io, fmt_str ++ "\n", args);
+    }
+    pub fn printErrf(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
+        self.printErr(io, fmt_str, args);
+    }
 
     pub fn validateArgs(self: *Command, args: []const []const u8) anyerror!void {
         const arbitraryArgs = @import("args.zig").arbitraryArgs;
@@ -301,18 +365,142 @@ pub const Command = struct {
 
     pub fn execute(self: *Command, io: std.Io, a: []const []const u8) anyerror!void {
         if (self.deprecated.len > 0) self.printErr(io, "Command \"{s}\" is deprecated, {s}\n", .{ self.name(), self.deprecated });
+
+        // ── Run hooks: persistent_pre_run (parent chain) → pre_run → persistent_post_run (defer) → post_run
+        @import("cobra.zig").runInitializers();
+        self.executePersistentPreRun();
+        if (self.pre_run) |f| f(self, @constCast(a));
+        defer {
+            if (self.post_run) |f| f(self, @constCast(a));
+            self.executePersistentPostRun();
+            @import("cobra.zig").runFinalizers();
+        }
+
         self.initDefaultHelpFlag();
         self.initDefaultVersionFlag();
-        self.preRun();
-        defer self.postRun();
-        try self.validateArgs(a);
-        if (self.run_e) |run_e| try run_e(self, @constCast(a))
-        else if (self.run) |run| return run(self, @constCast(a));
+
+        // ── Setup --help flag
+        var help_requested: bool = false;
+        if (self.flags != null and self.flags.?.lookup("help") == null) {
+            self.flags.?.boolVarP(&help_requested, "help", "h", false, "help for this command") catch {};
+        }
+
+        // ── Parse flags
+        var remaining = a;
+        if (self.flags != null and !self.disable_flag_parsing and remaining.len > 0) {
+            // Pass FParseErrWhitelist to pflag
+            self.flags.?.parse_errors_allowlist.unknown_flags = self.fparse_err_whitelist.unknown_flag;
+            self.flags.?.parse(remaining) catch |err| {
+                if (err == error.Help) {
+                    self.printHelp(io);
+                    return;
+                }
+                if (!self.silence_errors) {
+                    self.printErr(io, "{s} {s}\n", .{ self.errPrefix(), @errorName(err) });
+                }
+                if (!self.silence_usage) self.printHelp(io);
+                return err;
+            };
+            remaining = self.flags.?.argList();
+        }
+
+        // Show help if requested
+        if (help_requested) {
+            self.printHelp(io);
+            return;
+        }
+
+        // ── Version flag
+        if (self.version.len > 0 and self.flags != null) {
+            if (self.flags.?.lookup("version")) |vf| {
+                if (vf.changed) {
+                    self.print(io, "{s} version {s}\n", .{ self.displayName(), self.version });
+                    return;
+                }
+            }
+        }
+
+        try self.validateArgs(remaining);
+        if (self.run_e) |run_e| try run_e(self, @constCast(remaining)) else if (self.run) |run| return run(self, @constCast(remaining));
     }
 
-    fn preRun(_: *Command) void { @import("cobra.zig").runInitializers(); }
-    fn postRun(_: *Command) void { @import("cobra.zig").runFinalizers(); }
-    pub fn executeContext(self: *Command, io: std.Io) anyerror!void { const a = self.args_slice; return self.execute(io, a); }
+    fn executePersistentPreRun(self: *Command) void {
+        var cmd: ?*Command = self;
+        while (cmd) |c| : (cmd = c.parent) {
+            if (c.persistent_pre_run) |f| f(c, @constCast(c.args_slice));
+        }
+    }
+    fn executePersistentPostRun(self: *Command) void {
+        var cmd: ?*Command = self;
+        while (cmd) |c| : (cmd = c.parent) {
+            if (c.persistent_post_run) |f| f(c, @constCast(c.args_slice));
+        }
+    }
+
+    /// Print formatted help including description, usage, flags, and subcommands.
+    pub fn printHelp(self: *Command, io: std.Io) void {
+        // Try to get a writer: prefer configured out_writer, fall back to stderr
+        var buf: [4096]u8 = undefined;
+        var help_writer = std.Io.Writer.fixed(&buf);
+        if (self.out_writer) |ow| {
+            help_writer = ow.*;
+        }
+
+        // Description
+        if (self.long.len > 0) {
+            help_writer.print("{s}\n\n", .{self.long}) catch {};
+        } else if (self.short.len > 0) {
+            help_writer.print("{s}\n\n", .{self.short}) catch {};
+        }
+
+        // Usage
+        help_writer.print("Usage:\n", .{}) catch {};
+        if (self.runnable()) {
+            help_writer.print("  {s} [flags]", .{self.commandPath()}) catch {};
+        } else {
+            help_writer.print("  {s} [command]", .{self.commandPath()}) catch {};
+        }
+        help_writer.print("\n", .{}) catch {};
+
+        // Subcommands
+        const subs = self.getCommands();
+        if (subs.len > 0) {
+            help_writer.print("\nAvailable Commands:\n", .{}) catch {};
+            for (subs) |sub| {
+                if (!sub.isAvailableCommand() and !sub.isAdditionalHelpTopicCommand()) continue;
+                help_writer.print("  {s}\t{s}\n", .{ sub.name(), sub.short }) catch {};
+            }
+        }
+
+        // Flags
+        if (self.flags != null) {
+            help_writer.print("\nFlags:\n", .{}) catch {};
+            var flag_buf: [4096]u8 = undefined;
+            var fw = std.Io.Writer.fixed(&flag_buf);
+            const saved = self.flags.?.out_writer;
+            self.flags.?.out_writer = &fw;
+            self.flags.?.printDefaults();
+            self.flags.?.out_writer = saved;
+            const flag_out = std.Io.Writer.buffered(&fw);
+            if (flag_out.len > 0) {
+                help_writer.print("{s}\n", .{flag_out}) catch {};
+            }
+        }
+
+        if (self.example.len > 0) {
+            help_writer.print("\nExamples:\n  {s}\n", .{self.example}) catch {};
+        }
+
+        // Flush to stderr
+        const output = std.Io.Writer.buffered(&help_writer);
+        _ = std.os.linux.write(2, output.ptr, output.len);
+        _ = io;
+    }
+
+    pub fn executeContext(self: *Command, io: std.Io) anyerror!void {
+        const a = self.args_slice;
+        return self.execute(io, a);
+    }
     pub fn executeWrapper(self: *Command) anyerror!void {
         const io = @import("std").Io.Threaded.global_single_threaded.*.io();
 
@@ -345,14 +533,48 @@ pub const Command = struct {
         return cmd.execute(io, remaining);
     }
 
-    pub fn initDefaultHelpFlag(_: *Command) void {}
-    pub fn initDefaultVersionFlag(_: *Command) void {}
+    pub fn initDefaultHelpFlag(self: *Command) void {
+        // Lazy init: if no flags set, check parent
+        if (self.flags == null and self.parent != null) {
+            self.flags = self.parent.?.flags;
+        }
+    }
+    fn _hasHelpFlag(self: *Command) bool {
+        if (self.flags != null and self.flags.?.lookup("help") != null) return true;
+        if (self.parent) |p| return p._hasHelpFlag();
+        return false;
+    }
+    pub fn initDefaultVersionFlag(self: *Command) void {
+        if (self.version.len == 0) return;
+        if (self.flags != null and self.flags.?.lookup("version") != null) return;
+        if (self._hasVersionFlag()) return;
+        if (self.flags == null) return;
+        var _v: bool = false;
+        self.flags.?.boolVarP(&_v, "version", "", false, "print the version") catch {};
+    }
+    fn _hasVersionFlag(self: *Command) bool {
+        if (self.flags != null and self.flags.?.lookup("version") != null) return true;
+        if (self.parent) |p| return p._hasVersionFlag();
+        return false;
+    }
     pub fn initDefaultHelpCmd(_: *Command) void {}
-    pub fn initDefaultCompletionCmd(_: *Command, io: std.Io, args: [][]const u8) void { _ = io; _ = args; }
-    pub fn initCompleteCmd(_: *Command, io: std.Io, args: [][]const u8) void { _ = io; _ = args; }
-    pub fn usagePadding(self: *const Command) usize { return if (self.commands_max_use_len > 25) self.commands_max_use_len else 25; }
-    pub fn commandPathPadding(self: *const Command) usize { return if (self.commands_max_command_path_len > 11) self.commands_max_command_path_len else 11; }
-    pub fn namePadding(self: *const Command) usize { return if (self.commands_max_name_len > 11) self.commands_max_name_len else 11; }
+    pub fn initDefaultCompletionCmd(_: *Command, io: std.Io, args: [][]const u8) void {
+        _ = io;
+        _ = args;
+    }
+    pub fn initCompleteCmd(_: *Command, io: std.Io, args: [][]const u8) void {
+        _ = io;
+        _ = args;
+    }
+    pub fn usagePadding(self: *const Command) usize {
+        return if (self.commands_max_use_len > 25) self.commands_max_use_len else 25;
+    }
+    pub fn commandPathPadding(self: *const Command) usize {
+        return if (self.commands_max_command_path_len > 11) self.commands_max_command_path_len else 11;
+    }
+    pub fn namePadding(self: *const Command) usize {
+        return if (self.commands_max_name_len > 11) self.commands_max_name_len else 11;
+    }
     pub fn checkCommandGroups(_: *const Command) void {}
 
     pub fn isFlagArg(arg: []const u8) bool {
@@ -360,19 +582,8 @@ pub const Command = struct {
             (arg.len >= 2 and arg[0] == '-' and arg[1] != '-');
     }
 };
-
-pub const FlagSet = struct {
-    pub fn lookup(self: *FlagSet, lookup_name: []const u8) ?*Flag { _ = self; _ = lookup_name; return null; }
-    pub fn shorthandLookup(self: *FlagSet, shorthand: []const u8) ?*Flag { _ = self; _ = shorthand; return null; }
-    pub fn parse(self: *FlagSet, parse_args: [][]const u8) anyerror!void { _ = self; _ = parse_args; }
-    pub fn nArg(self: *FlagSet) usize { _ = self; return 0; }
-    pub fn args(self: *FlagSet) [][]const u8 { _ = self; return &.{}; }
-};
-pub const Flag = struct {
-    name: []const u8 = "", shorthand: []const u8 = "", usage: []const u8 = "",
-    def_value: []const u8 = "", changed: bool = false, hidden: bool = false,
-    deprecated: []const u8 = "", no_opt_def_val: []const u8 = "",
-};
+pub const FlagSet = pflag.FlagSet;
+pub const Flag = pflag.Flag;
 
 pub const default_usage_template = "Usage:{{if .Runnable}}\n  {{.UseLine}}{{end}}\n";
 pub const default_help_template = "{{with (or .Long .Short)}}{{.}}{{end}}";

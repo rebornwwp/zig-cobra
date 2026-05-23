@@ -4,10 +4,20 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // ── pflag dependency (local) ──
+    const pflag_mod = b.createModule(.{
+        .root_source_file = b.path("../zig-pflag/src/pflag.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/cobra.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "pflag", .module = pflag_mod },
+        },
     });
 
     const lib = b.addLibrary(.{
@@ -40,6 +50,30 @@ pub fn build(b: *std.Build) void {
     const run_demo_step = b.step("run-demo", "Run the demo app (pass args after --)");
     run_demo_step.dependOn(&run_demo.step);
 
+    // ── Dockr demo executable ──
+    const dockr_mod = b.createModule(.{
+        .root_source_file = b.path("dockr/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "cobra", .module = lib_mod },
+        },
+    });
+    const dockr_exe = b.addExecutable(.{
+        .name = "dockr",
+        .root_module = dockr_mod,
+    });
+    const install_dockr = b.addInstallArtifact(dockr_exe, .{});
+    b.getInstallStep().dependOn(&install_dockr.step);
+
+    const run_dockr = b.addRunArtifact(dockr_exe);
+    run_dockr.step.dependOn(&install_dockr.step);
+    if (b.args) |args| {
+        run_dockr.addArgs(args);
+    }
+    const run_dockr_step = b.step("run-dockr", "Run the dockr demo (pass args after --)");
+    run_dockr_step.dependOn(&run_dockr.step);
+
     // Run both test files
     const test_files = [_]struct { name: []const u8, path: []const u8 }{
         .{ .name = "cobra_test", .path = "src/cobra_test.zig" },
@@ -57,6 +91,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(tf.path),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pflag", .module = pflag_mod },
+            },
         });
         const tests = b.addTest(.{ .root_module = test_mod });
         const run_tests = b.addRunArtifact(tests);

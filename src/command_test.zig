@@ -77,9 +77,12 @@ test "hasParent and root" {
 }
 
 test "name extraction" {
-    const c1 = Command{ .use = "root" };try std.testing.expectEqualStrings("root", c1.name());
-    const c2 = Command{ .use = "run [args]" };try std.testing.expectEqualStrings("run", c2.name());
-    const c3 = Command{ .use = "" };try std.testing.expectEqualStrings("", c3.name());
+    const c1 = Command{ .use = "root" };
+    try std.testing.expectEqualStrings("root", c1.name());
+    const c2 = Command{ .use = "run [args]" };
+    try std.testing.expectEqualStrings("run", c2.name());
+    const c3 = Command{ .use = "" };
+    try std.testing.expectEqualStrings("", c3.name());
 }
 
 test "command path padding" {
@@ -200,8 +203,7 @@ test "execute with run function" {
     try std.testing.expect(true);
 }
 
-test "suggestions disabled" {
-    }
+test "suggestions disabled" {}
 
 test "hasExample" {
     const withEx = Command{ .use = "c", .example = "ex" };

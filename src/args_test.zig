@@ -30,13 +30,13 @@ test "NoArgs - error with args" {
 
 test "ArbitraryArgs - always succeeds" {
     var cmd = try getCommand(args_mod.arbitraryArgs(), false);
-    const result = cmd.args_validator.?.validate(&cmd, &.{"a", "b", "c"});
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "a", "b", "c" });
     try std.testing.expectEqual({}, result);
 }
 
 test "ExactArgs - correct count succeeds" {
     var cmd = try getCommand(args_mod.exactArgs(2), false);
-    const result = cmd.args_validator.?.validate(&cmd, &.{"one", "two"});
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "one", "two" });
     try std.testing.expectEqual({}, result);
 }
 
@@ -48,7 +48,7 @@ test "ExactArgs - wrong count errors" {
 
 test "MinimumNArgs - enough args succeeds" {
     var cmd = try getCommand(args_mod.minimumNArgs(2), false);
-    const result = cmd.args_validator.?.validate(&cmd, &.{"a", "b", "c"});
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "a", "b", "c" });
     try std.testing.expectEqual({}, result);
 }
 
@@ -60,23 +60,23 @@ test "MinimumNArgs - too few args errors" {
 
 test "MaximumNArgs - within limit succeeds" {
     var cmd = try getCommand(args_mod.maximumNArgs(2), false);
-    const result = cmd.args_validator.?.validate(&cmd, &.{"a", "b"});
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "a", "b" });
     try std.testing.expectEqual({}, result);
 }
 
 test "MaximumNArgs - exceed limit errors" {
     var cmd = try getCommand(args_mod.maximumNArgs(2), false);
-    const result = cmd.args_validator.?.validate(&cmd, &.{"a", "b", "c"}) catch |err| err;
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "a", "b", "c" }) catch |err| err;
     try std.testing.expectEqual(error.ArgsCount, result);
 }
 
 test "RangeArgs - within range succeeds" {
     var cmd = try getCommand(args_mod.rangeArgs(2, 4), false);
-    const r1 = cmd.args_validator.?.validate(&cmd, &.{"a", "b"});
+    const r1 = cmd.args_validator.?.validate(&cmd, &.{ "a", "b" });
     try std.testing.expectEqual({}, r1);
-    const r2 = cmd.args_validator.?.validate(&cmd, &.{"a", "b", "c", "d"});
+    const r2 = cmd.args_validator.?.validate(&cmd, &.{ "a", "b", "c", "d" });
     try std.testing.expectEqual({}, r2);
-    const r3 = cmd.args_validator.?.validate(&cmd, &.{"a", "b", "c"});
+    const r3 = cmd.args_validator.?.validate(&cmd, &.{ "a", "b", "c" });
     try std.testing.expectEqual({}, r3);
 }
 
@@ -88,7 +88,7 @@ test "RangeArgs - below range errors" {
 
 test "RangeArgs - above range errors" {
     var cmd = try getCommand(args_mod.rangeArgs(2, 4), false);
-    const result = cmd.args_validator.?.validate(&cmd, &.{"a", "b", "c", "d", "e"}) catch |err| err;
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "a", "b", "c", "d", "e" }) catch |err| err;
     try std.testing.expectEqual(error.ArgsCount, result);
 }
 
@@ -99,19 +99,19 @@ test "MatchAll - combines validators" {
     try std.testing.expectEqual({}, r1);
     const r2 = cmd.args_validator.?.validate(&cmd, &.{}) catch |err| err;
     try std.testing.expectEqual(error.ArgsCount, r2);
-    const r3 = cmd.args_validator.?.validate(&cmd, &.{"a", "b", "c", "d"}) catch |err| err;
+    const r3 = cmd.args_validator.?.validate(&cmd, &.{ "a", "b", "c", "d" }) catch |err| err;
     try std.testing.expectEqual(error.ArgsCount, r3);
 }
 
 test "noDuplicateArgs - no duplicates succeeds" {
     var cmd = try getCommand(args_mod.noDuplicateArgs(), false);
-    const result = cmd.args_validator.?.validate(&cmd, &.{"a", "b", "c"});
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "a", "b", "c" });
     try std.testing.expectEqual({}, result);
 }
 
 test "noDuplicateArgs - duplicate errors" {
     var cmd = try getCommand(args_mod.noDuplicateArgs(), false);
-    const result = cmd.args_validator.?.validate(&cmd, &.{"a", "b", "a"}) catch |err| err;
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "a", "b", "a" }) catch |err| err;
     try std.testing.expectEqual(error.DuplicateArg, result);
 }
 
