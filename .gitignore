@@ -2,3 +2,6 @@
 zig-out/
 libcommand_test.a
 *.a
+.sisyphus/
+zig-out/
+.zig-cache/
