@@ -21,74 +21,76 @@ const std = @import("std");
 const cobra = @import("cobra");
 const pflag = cobra.command_mod.pflag;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+// Shared state: place flag targets where the run function can reach them.
+const App = struct {
+    name: []const u8 = "world",
+};
+
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    var app = App{};
 
     // ── Flag setup ──
-    var flags = pflag.FlagSet.init(allocator, "hello");
+    var flags = pflag.FlagSet.init(gpa, "hello");
     defer flags.deinit();
-    var name: []const u8 = "world";
-    flags.stringVarP(&name, "name", "n", "world", "your name") catch {};
+    flags.stringVarP(&app.name, "name", "n", "world", "your name") catch {};
 
     // ── Commands ──
     var helloCmd = cobra.Command{
         .use   = "hello",
         .short = "Say hello to someone",
-        .long  = "Prints a greeting.\nDefaults to \"world\".",
+        .long  = "Prints a greeting.  Defaults to \"world\".",
         .run   = helloRun,
         .flags = &flags,
     };
+    helloCmd.iflags = @ptrCast(@alignCast(&app));
 
     var rootCmd = cobra.Command{
         .use   = "myapp",
         .short = "A friendly CLI demo",
         .flags = &flags,
     };
-    rootCmd.addCommand(allocator, &.{&helloCmd});
-    defer rootCmd.deinit(allocator);
+    rootCmd.addCommand(gpa, &.{&helloCmd});
+    defer rootCmd.deinit(gpa);
 
-    // ── Parse args (skip program name) and execute ──
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-    const effective = if (args.len > 1) args[1..] else &.{};
+    // ── Parse args and execute ──
+    const alloc = init.arena.allocator();
+    const raw = try init.minimal.args.toSlice(alloc);
+    const effective = if (raw.len > 1) raw[1..] else &.{};
     rootCmd.setArgs(effective);
     rootCmd.executeWrapper() catch {};
 }
 
 fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
-    _ = cmd;
     _ = args;
-    // Flag values are already parsed — access them from shared state.
-    std.debug.print("hello {s}\n", .{name});
+    const app: *App = @ptrCast(@alignCast(cmd.iflags.?));
+    std.debug.print("hello {s}\n", .{app.name});
 }
 ```
 
-## Command Tree Example
+## Command Tree
 
 ```zig
-var appCmd       = cobra.Command{ .use = "app",        .short = "Application root" };
-var serveCmd     = cobra.Command{ .use = "serve",      .short = "Start server",    .run = serveFn };
-var serveHTTPCmd = cobra.Command{ .use = "http",       .short = "HTTP server",     .run = serveHTTPFn };
-var serveGRPCCmd = cobra.Command{ .use = "grpc",       .short = "gRPC server",     .run = serveGRPCFn };
+// Parent command
+var serveCmd = cobra.Command{ .use = "serve", .short = "Start server" };
 
-serveCmd.addCommand(allocator, &.{ &serveHTTPCmd, &serveGRPCCmd });
-appCmd.addCommand(allocator, &.{ &serveCmd });
-// nests:  app → serve → http / grpc
+// Leaf commands — created outside parent scope so pointers stay alive
+var httpCmd  = cobra.Command{ .use = "http",  .short = "HTTP server",  .run = serveHTTPFn };
+var grpcCmd  = cobra.Command{ .use = "grpc",  .short = "gRPC server",  .run = serveGRPCFn };
+
+serveCmd.addCommand(gpa, &.{ &httpCmd, &grpcCmd });
+// nests:  serve → http / grpc
 ```
 
 ## Run Hooks
 
-| Hook | Fires |
-|------|-------|
-| `pre_run` / `post_run` | Before / after this command's `run` |
-| `persistent_pre_run` / `persistent_post_run` | On the whole path from root to this command |
-
 ```zig
 var root = cobra.Command{
-    .persistent_pre_run = setupLogging, // runs before any command
+    .persistent_pre_run = setupLogging,   // runs before ANY command in the tree
+    .pre_run            = initDatabase,   // runs before this command's own run
+    .post_run           = cleanup,        // runs after  this command's own run
 };
+// persistent_post_run at root runs after all commands complete
 ```
 
 ## Arg Validation
