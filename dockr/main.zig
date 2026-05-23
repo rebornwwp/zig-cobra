@@ -64,8 +64,10 @@ pub fn main(init: std.process.Init) !void {
 
 fn rootPersistentPreRun(cmd: *Command, _: [][]const u8) void {
     const st: *types.AppState = @ptrCast(@alignCast(cmd.root().iflags.?));
+    const io = @import("std").Io.Threaded.global_single_threaded.*.io();
     var buf: [256]u8 = undefined;
-    var w = std.Io.Writer.fixed(&buf);
+    var stderr_w = std.Io.File.Writer.init(std.Io.File.stderr(), io, &buf);
+    const w = &stderr_w.interface;
     w.print("Loaded config: {s}\n", .{st.config}) catch {};
-    _ = std.os.linux.write(2, std.Io.Writer.buffered(&w).ptr, std.Io.Writer.buffered(&w).len);
+    stderr_w.flush() catch {};
 }
