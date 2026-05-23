@@ -493,7 +493,11 @@ pub const Command = struct {
 
         // Flush to stderr
         const output = std.Io.Writer.buffered(&help_writer);
-        std.Io.File.stderr().writeStreamingAll(io, output) catch {};
+        var stderr_buf: [256]u8 = undefined;
+        var stderr_w = std.Io.File.Writer.init(std.Io.File.stderr(), io, &stderr_buf);
+        const se = &stderr_w.interface;
+        se.print("{s}", .{output}) catch {};
+        stderr_w.flush() catch {};
         
     }
 

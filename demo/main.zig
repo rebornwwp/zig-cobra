@@ -40,6 +40,8 @@ fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
     const state: *HelloState = @ptrCast(@alignCast(cmd.iflags.?));
     const io = @import("std").Io.Threaded.global_single_threaded.*.io();
     var buf: [128]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "hello {s}\n", .{state.name}) catch return;
-    std.Io.File.stdout().writeStreamingAll(io, msg) catch {};
+    var stdout_w = std.Io.File.Writer.init(std.Io.File.stdout(), io, &buf);
+    const w = &stdout_w.interface;
+    w.print("hello {s}\n", .{state.name}) catch {};
+    stdout_w.flush() catch {};
 }
