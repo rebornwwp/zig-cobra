@@ -67,5 +67,5 @@ fn rootPersistentPreRun(cmd: *Command, _: [][]const u8) void {
     var buf: [256]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     w.print("Loaded config: {s}\n", .{st.config}) catch {};
-    _ = std.os.linux.write(2, std.Io.Writer.buffered(&w).ptr, std.Io.Writer.buffered(&w).len);
+    const io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stderr().writeStreamingAll(io, std.Io.Writer.buffered(&w)) catch {};
 }

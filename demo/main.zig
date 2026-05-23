@@ -1,7 +1,3 @@
-//! Simple hello-world CLI using zig-cobra + zig-pflag.
-//! zig build run-demo -- hello --name=Sisyphus
-//! zig build run-demo -- hello                 # defaults to "world"
-
 const std = @import("std");
 const cobra = @import("cobra");
 const pflag = cobra.command_mod.pflag;
@@ -34,15 +30,16 @@ pub fn main(init: std.process.Init) !void {
 
     const alloc = init.arena.allocator();
     const raw = try init.minimal.args.toSlice(alloc);
-    const effective = if (raw.len > 1) raw[1..] else &.{};
-    rootCmd.setArgs(@as([]const []const u8, @ptrCast(effective)));
+    const effective = if (raw.len > 1) @as([]const []const u8, @ptrCast(raw[1..])) else &.{};
+    rootCmd.setArgs(effective);
     rootCmd.executeWrapper() catch {};
 }
 
 fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
     _ = args;
     const state: *HelloState = @ptrCast(@alignCast(cmd.iflags.?));
+    const io = @import("std").Io.Threaded.global_single_threaded.*.io();
     var buf: [128]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "hello {s}\n", .{state.name}) catch return;
-    _ = std.os.linux.write(1, msg.ptr, msg.len);
+    std.Io.File.stdout().writeStreamingAll(io, msg) catch {};
 }

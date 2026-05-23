@@ -10,15 +10,15 @@ pub fn init(gpa: std.mem.Allocator, cmd: *Command, ls_cmd: *Command, pull_cmd: *
     cmd.addCommand(gpa, &.{ ls_cmd, pull_cmd, push_cmd });
 }
 fn lsFn(_: *Command, _: [][]const u8) void {
-    _ = std.os.linux.write(1, "REPOSITORY   TAG       SIZE\n", 27);
+    const io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stdout().writeStreamingAll(io, "REPOSITORY   TAG       SIZE\n") catch {};
 }
 fn pullFn(_: *Command, args: [][]const u8) void {
     var b: [128]u8 = undefined;
     const m = std.fmt.bufPrint(&b, "Pulling '{s}'...\n", .{args[0]}) catch return;
-    _ = std.os.linux.write(1, m.ptr, m.len);
+    const io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stdout().writeStreamingAll(io, m) catch {};
 }
 fn pushFn(_: *Command, args: [][]const u8) void {
     var b: [128]u8 = undefined;
     const m = std.fmt.bufPrint(&b, "Pushing '{s}'...\n", .{args[0]}) catch return;
-    _ = std.os.linux.write(1, m.ptr, m.len);
+    const io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stdout().writeStreamingAll(io, m) catch {};
 }

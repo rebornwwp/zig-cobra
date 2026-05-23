@@ -47,26 +47,26 @@ fn runFn(cmd: *Command, args: [][]const u8) void {
     _ = std.os.linux.write(1, types.formatRun(opts, if (args.len > 0) args[0] else "image", &buf).ptr, types.formatRun(opts, if (args.len > 0) args[0] else "image", &buf).len);
 }
 fn lsFn(_: *Command, _: [][]const u8) void {
-    _ = std.os.linux.write(1, "CONTAINER ID   IMAGE     STATUS\n", 31);
+    const io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stdout().writeStreamingAll(io, "CONTAINER ID   IMAGE     STATUS\n") catch {};
 }
 fn startFn(_: *Command, args: [][]const u8) void {
     for (args) |n| {
         var b: [128]u8 = undefined;
         const m = std.fmt.bufPrint(&b, "Started container '{s}'\n", .{n}) catch continue;
-        _ = std.os.linux.write(1, m.ptr, m.len);
+        const io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stdout().writeStreamingAll(io, m) catch {};
     }
 }
 fn stopFn(_: *Command, args: [][]const u8) void {
     for (args) |n| {
         var b: [128]u8 = undefined;
         const m = std.fmt.bufPrint(&b, "Stopped container '{s}'\n", .{n}) catch continue;
-        _ = std.os.linux.write(1, m.ptr, m.len);
+        const io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stdout().writeStreamingAll(io, m) catch {};
     }
 }
 fn rmFn(_: *Command, args: [][]const u8) void {
     for (args) |n| {
         var b: [128]u8 = undefined;
         const m = std.fmt.bufPrint(&b, "Removed container '{s}'\n", .{n}) catch continue;
-        _ = std.os.linux.write(1, m.ptr, m.len);
+        const io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stdout().writeStreamingAll(io, m) catch {};
     }
 }

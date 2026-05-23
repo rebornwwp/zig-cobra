@@ -9,10 +9,12 @@ pub fn init(gpa: std.mem.Allocator, cmd: *Command, ls_cmd: *Command, create_cmd:
     cmd.addCommand(gpa, &.{ ls_cmd, create_cmd });
 }
 fn lsFn(_: *Command, _: [][]const u8) void {
-    _ = std.os.linux.write(1, "VOLUME NAME\n", 12);
+    const io = std.Io.Threaded.global_single_threaded.*.io();
+    std.Io.File.stdout().writeStreamingAll(io, "VOLUME NAME\n") catch {};
 }
 fn createFn(_: *Command, args: [][]const u8) void {
     var b: [128]u8 = undefined;
     const m = std.fmt.bufPrint(&b, "Created volume '{s}'\n", .{args[0]}) catch return;
-    _ = std.os.linux.write(1, m.ptr, m.len);
+    const io = std.Io.Threaded.global_single_threaded.*.io();
+    std.Io.File.stdout().writeStreamingAll(io, m) catch {};
 }
