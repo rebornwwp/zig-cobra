@@ -1,0 +1,4 @@
+.zig-cache/
+zig-out/
+libcommand_test.a
+*.a
