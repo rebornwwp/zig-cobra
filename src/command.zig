@@ -493,8 +493,8 @@ pub const Command = struct {
 
         // Flush to stderr
         const output = std.Io.Writer.buffered(&help_writer);
-        _ = std.os.linux.write(2, output.ptr, output.len);
-        _ = io;
+        std.Io.File.stderr().writeStreamingAll(io, output) catch {};
+        
     }
 
     pub fn executeContext(self: *Command, io: std.Io) anyerror!void {

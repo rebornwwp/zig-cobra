@@ -44,7 +44,7 @@ pub fn init_stop(cmd: *Command) void {
 fn runFn(cmd: *Command, args: [][]const u8) void {
     const opts: *types.ContainerRunOpts = @ptrCast(@alignCast(cmd.iflags.?));
     var buf: [512]u8 = undefined;
-    _ = std.os.linux.write(1, types.formatRun(opts, if (args.len > 0) args[0] else "image", &buf).ptr, types.formatRun(opts, if (args.len > 0) args[0] else "image", &buf).len);
+    const _io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stdout().writeStreamingAll(_io, types.formatRun(opts, if (args.len > 0) args[0] else "image", &buf)) catch {};
 }
 fn lsFn(_: *Command, _: [][]const u8) void {
     const io = std.Io.Threaded.global_single_threaded.*.io(); std.Io.File.stdout().writeStreamingAll(io, "CONTAINER ID   IMAGE     STATUS\n") catch {};
