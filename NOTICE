@@ -1,0 +1,13 @@
+zig-cobra
+Copyright (c) 2024-2026 zig-cobra contributors
+
+This product is a port of spf13/cobra (https://github.com/spf13/cobra),
+which is copyright (c) 2013-2023 Steve Francia and the spf13/cobra
+contributors, licensed under the Apache License, Version 2.0.
+
+The original Go source code has been translated to Zig 0.16.0 with
+architectural adaptations for Zig's comptime generics, manual
+memory management, and integration with zig-pflag.
+
+This product depends on zig-pflag (https://github.com/rebornwwp/zig-pflag),
+a port of spf13/pflag, licensed under the BSD 3-Clause License.

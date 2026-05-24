@@ -127,4 +127,4 @@ zig build run-dockr -- container run -d --name web -p 80:80 nginx
 
 ## License
 
-MIT
+Apache License 2.0
