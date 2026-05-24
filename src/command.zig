@@ -1,4 +1,4 @@
-//! Command is the core of cobra - a command for your CLI application.
+//! Command is the core of cobra — a command abstraction for your CLI application.
 //! Maps 1:1 from cobra/command.go
 const std = @import("std");
 pub const pflag = @import("pflag");
@@ -9,92 +9,173 @@ const CompletionFuncType = @import("completions.zig").CompletionFunc;
 const CompletionOptions = @import("completions.zig").CompletionOptions;
 const PositionalArgs = @import("args.zig").PositionalArgs;
 
+/// Annotation key for flags set internally by cobra
 pub const FlagSetByCobraAnnotation = "cobra_annotation_flag_set_by_cobra";
+/// Annotation key for custom command display name
 pub const CommandDisplayNameAnnotation = "cobra_annotation_command_display_name";
+/// Standard name for the help flag
 pub const help_flag_name = "help";
+/// Standard name for the help command
 pub const help_command_name = "help";
 
+/// Flag parse error whitelist: controls which parse errors are silently ignored.
 pub const FParseErrWhitelist = struct {
+    /// Ignore unknown flag errors
     unknown_flag: bool = false,
+    /// Ignore invalid flag errors
     invalid_flag: bool = false,
+    /// Ignore unknown shorthand flag errors
     unknown_shorthand_flag: bool = false,
 };
 
+/// Command group: used to categorize subcommands in help output.
 pub const Group = struct {
+    /// Group identifier
     id: []const u8,
+    /// Group title (displayed in help)
     title: []const u8,
 };
 
+/// Template function: used for custom help output templates.
 pub const TmplFunc = struct {
+    /// Go template string
     tmpl: []const u8,
 };
 
+/// Command run function signature: (cmd, args) -> void
 pub const RunFunc = *const fn (cmd: *Command, args: [][]const u8) void;
+/// Fallible run function signature: (cmd, args) -> error!void
 pub const RunEFunc = *const fn (cmd: *Command, args: [][]const u8) anyerror!void;
+/// Custom help function signature: (cmd, args) -> void
 pub const HelpFuncType = *const fn (cmd: *Command, args: [][]const u8) void;
+/// Custom usage function signature: (cmd) -> error!void
 pub const UsageFuncType = *const fn (cmd: *Command) anyerror!void;
+/// Custom flag error handler signature: (cmd, err) -> error!void
 pub const FlagErrorFuncType = *const fn (cmd: *Command, err: anyerror) anyerror!void;
 
+/// Command is the core struct of cobra, representing a single CLI command.
+/// All fields are public and can be set during initialization.
+/// Important: Command instances should have stack lifetime; avoid heap allocation.
 pub const Command = struct {
+    /// Usage line, e.g. "serve [flags] [args]". The first word is the command name.
     use: []const u8,
+    /// Alternative command names
     aliases: []const []const u8 = &.{},
+    /// Names that, when typed, will suggest this command
     suggest_for: []const []const u8 = &.{},
+    /// Short description (shown in parent command's help)
     short: []const u8 = "",
+    /// Long description (shown in this command's help)
     long: []const u8 = "",
+    /// Usage examples
     example: []const u8 = "",
+    /// Valid argument values (used with OnlyValidArgs validator)
     valid_args: []const []const u8 = &.{},
+    /// Argument aliases
     arg_aliases: []const []const u8 = &.{},
+    /// Arbitrary key-value metadata
     annotations: std.StringArrayHashMapUnmanaged([]const []const u8) = .{},
+    /// Version string: when set, --version flag is automatically enabled
     version: []const u8 = "",
+    /// Deprecation message: non-empty means this command is deprecated
     deprecated: []const u8 = "",
+    /// Command group ID (for grouping subcommands in help output)
     group_id: []const u8 = "",
+    /// Main execution function
     run: ?RunFunc = null,
+    /// Main execution function (fallible)
     run_e: ?RunEFunc = null,
+    /// Pre-run hook: executed before this command's run
     pre_run: ?RunFunc = null,
+    /// Pre-run hook (fallible)
     pre_run_e: ?RunEFunc = null,
+    /// Post-run hook: executed after this command's run
     post_run: ?RunFunc = null,
+    /// Post-run hook (fallible)
     post_run_e: ?RunEFunc = null,
+    /// Persistent pre-run hook: executed before run for all commands in the subtree
     persistent_pre_run: ?RunFunc = null,
+    /// Persistent pre-run hook (fallible)
     persistent_pre_run_e: ?RunEFunc = null,
+    /// Persistent post-run hook: executed after run for all commands in the subtree
     persistent_post_run: ?RunFunc = null,
+    /// Persistent post-run hook (fallible)
     persistent_post_run_e: ?RunEFunc = null,
+    /// Flag parse error whitelist
     fparse_err_whitelist: FParseErrWhitelist = .{},
+    /// Completion behavior configuration
     completion_options: CompletionOptions = .{},
+    /// Run on all child commands, not just the matched one
     traverse_children: bool = false,
+    /// Hide this command from help output
     hidden: bool = false,
+    /// Suppress error output
     silence_errors: bool = false,
+    /// Suppress usage output on errors
     silence_usage: bool = false,
+    /// Disable flag parsing (raw args passed directly to run)
     disable_flag_parsing: bool = false,
+    /// Disable automatic flag tag generation
     disable_auto_gen_tag: bool = false,
+    /// Hide flag info in the usage line
     disable_flags_in_use_line: bool = false,
+    /// Disable "Did you mean?" suggestions
     disable_suggestions: bool = false,
+    /// Minimum Levenshtein distance for suggestions (0 = use default of 2)
     suggestions_minimum_distance: usize = 0,
+    /// Positional argument validator
     args_validator: ?PositionalArgs = null,
+    /// Dynamic argument completion function
     valid_args_function: ?CompletionFuncType = null,
+    /// Command group list
     commandgroups: std.ArrayListUnmanaged(*Group) = .empty,
+    /// Group ID for the help command
     help_command_group_id: []const u8 = "",
+    /// Group ID for the completion command
     completion_command_group_id: []const u8 = "",
+    /// Custom usage output function
     usage_func: ?UsageFuncType = null,
+    /// Custom help output function
     help_func: ?HelpFuncType = null,
+    /// Custom flag error handler
     flag_error_func: ?FlagErrorFuncType = null,
+    /// Error output prefix
     err_prefix: []const u8 = "",
+    /// Parsed command-line arguments
     args_slice: []const []const u8 = &.{},
+    /// Subcommand list (internal use)
     commands: std.ArrayListUnmanaged(*Command) = .empty,
+    /// Parent command pointer (internal use, set automatically by addCommand)
     parent: ?*Command = null,
+    /// Whether subcommands have been sorted alphabetically
     commands_are_sorted: bool = false,
+    /// Name the command was called as
     command_called_as: struct { name: []const u8 = "", called: bool = false } = .{},
+    /// Associated help command
     help_command: ?*Command = null,
+    /// Custom stdout writer
     out_writer: ?*std.Io.Writer = null,
+    /// Custom stderr writer
     err_writer: ?*std.Io.Writer = null,
+    /// Custom stdin reader
     in_reader: ?*std.Io.Reader = null,
+    /// Local flag set
     flags: ?*pflag.FlagSet = null,
+    /// Persistent flag set (automatically inherited by subcommands)
     pflags: ?*pflag.FlagSet = null,
+    /// Local flags inherited from parent only
     lflags: ?*pflag.FlagSet = null,
+    /// Flags inherited from parent (can be cast to arbitrary pointer type to pass user data)
     iflags: ?*pflag.FlagSet = null,
+    /// Union of all parent persistent flag sets
     parents_pflags: ?*pflag.FlagSet = null,
+    /// Flag error buffer
     flag_error_buf: ?*std.ArrayListUnmanaged(u8) = null,
+    /// Maximum use field length among subcommands (for alignment)
     commands_max_use_len: usize = 0,
+    /// Maximum command path length among subcommands
     commands_max_command_path_len: usize = 0,
+    /// Maximum command name length among subcommands
     commands_max_name_len: usize = 0,
 
     // ─── Methods ───

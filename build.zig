@@ -49,6 +49,28 @@ pub fn build(b: *std.Build) void {
     const run_demo_step = b.step("run-demo", "Run demo app");
     run_demo_step.dependOn(&run_demo.step);
 
+    // ── Dockr Demo ──
+    const dockr_exe = b.addExecutable(.{
+        .name = "dockr",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("dockr/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "cobra", .module = lib_mod },
+                .{ .name = "pflag", .module = pflag_mod },
+            },
+        }),
+    });
+    const install_dockr = b.addInstallArtifact(dockr_exe, .{});
+    b.getInstallStep().dependOn(&install_dockr.step);
+
+    const run_dockr = b.addRunArtifact(dockr_exe);
+    run_dockr.step.dependOn(&install_dockr.step);
+    if (b.args) |args| run_dockr.addArgs(args);
+    const run_dockr_step = b.step("run-dockr", "Run Docker-style demo");
+    run_dockr_step.dependOn(&run_dockr.step);
+
     // ── 测试 ──
     const test_files = [_]struct { name: []const u8, path: []const u8 }{
         .{ .name = "cobra_test", .path = "src/cobra_test.zig" },

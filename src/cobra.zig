@@ -1,4 +1,4 @@
-//! Cobra - global config + utility functions
+//! Cobra global configuration and utility functions
 const std = @import("std");
 
 pub const command_mod = @import("command.zig");
@@ -37,46 +37,62 @@ pub const GetActiveHelpConfig = active_help_mod.getActiveHelpConfig;
 pub const flag_groups_mod = @import("flag_groups.zig");
 pub const shell_completions_mod = @import("shell_completions.zig");
 
+/// Default: prefix matching disabled
 pub const default_prefix_matching: bool = false;
+/// Default: command sorting enabled
 pub const default_command_sorting: bool = true;
+/// Default: case-sensitive matching
 pub const default_case_insensitive: bool = false;
+/// Default: do not traverse run hooks across parent chain
 pub const default_traverse_run_hooks: bool = false;
 
+/// Global: enable prefix matching (partial command names will match)
 pub var enable_prefix_matching: bool = default_prefix_matching;
+/// Global: sort subcommands alphabetically in help output
 pub var enable_command_sorting: bool = default_command_sorting;
+/// Global: case-insensitive command name matching
 pub var enable_case_insensitive: bool = default_case_insensitive;
+/// Global: execute run hooks on parent commands in the chain
 pub var enable_traverse_run_hooks: bool = default_traverse_run_hooks;
 
+/// Windows cmd.exe detection help text
 pub var mousetrap_help_text: []const u8 =
     "This is a command line tool.\n\nYou need to open cmd.exe and run it from there.\n";
 
+/// Windows mousetrap display duration in nanoseconds
 pub var mousetrap_display_duration_ns: i64 = 5 * std.time.ns_per_s;
 
 var initializers: std.ArrayListUnmanaged(*const fn () void) = .empty;
 var finalizers: std.ArrayListUnmanaged(*const fn () void) = .empty;
 
+/// Register initialization functions, called before command execution.
 pub fn onInitialize(gpa: std.mem.Allocator, fns: []const *const fn () void) !void {
     try initializers.appendSlice(gpa, fns);
 }
 
+/// Register finalizer functions, called after command execution.
 pub fn onFinalize(gpa: std.mem.Allocator, fns: []const *const fn () void) !void {
     try finalizers.appendSlice(gpa, fns);
 }
 
+/// Execute all registered initializer functions.
 pub fn runInitializers() void {
     for (initializers.items) |init_fn| init_fn();
 }
 
+/// Execute all registered finalizer functions.
 pub fn runFinalizers() void {
     for (finalizers.items) |fin_fn| fin_fn();
 }
 
+/// Trim trailing whitespace from a string.
 pub fn trimRightSpace(s: []const u8) []const u8 {
     var end: usize = s.len;
     while (end > 0 and std.ascii.isWhitespace(s[end - 1])) : (end -= 1) {}
     return s[0..end];
 }
 
+/// If the string does not already contain to_append, append " " + to_append. Returns newly allocated string.
 pub fn appendIfNotPresent(gpa: std.mem.Allocator, s: []const u8, to_append: []const u8) ![]const u8 {
     if (std.mem.indexOf(u8, s, to_append) != null) return s;
     const result = try gpa.alloc(u8, s.len + 1 + to_append.len);
@@ -86,6 +102,7 @@ pub fn appendIfNotPresent(gpa: std.mem.Allocator, s: []const u8, to_append: []co
     return result;
 }
 
+/// Right-pad a string with spaces to the given width. If s is already >= padding, return s as-is.
 pub fn rpad(gpa: std.mem.Allocator, s: []const u8, padding: usize) ![]const u8 {
     if (s.len >= padding) return s;
     const result = try gpa.alloc(u8, padding);
@@ -94,6 +111,7 @@ pub fn rpad(gpa: std.mem.Allocator, s: []const u8, padding: usize) ![]const u8 {
     return result;
 }
 
+/// Compute the Levenshtein edit distance between two strings. When ignore_case is true, comparison is case-insensitive.
 pub fn levenshteinDistance(s: []const u8, t: []const u8, ignore_case: bool) usize {
     var s_buf: [1024]u8 = undefined;
     var t_buf: [1024]u8 = undefined;
@@ -116,11 +134,13 @@ pub fn levenshteinDistance(s: []const u8, t: []const u8, ignore_case: bool) usiz
     return d[n][m];
 }
 
+/// Check if needle exists in haystack slice (exact match).
 pub fn stringInSlice(needle: []const u8, haystack: []const []const u8) bool {
     for (haystack) |h| if (std.mem.eql(u8, needle, h)) return true;
     return false;
 }
 
+/// Compare two command names for equality, respecting enable_case_insensitive.
 pub fn commandNameMatches(s: []const u8, t: []const u8) bool {
     if (enable_case_insensitive) return std.ascii.eqlIgnoreCase(s, t);
     return std.mem.eql(u8, s, t);
