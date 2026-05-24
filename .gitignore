@@ -5,3 +5,4 @@ libcommand_test.a
 .sisyphus/
 zig-out/
 .zig-cache/
+cobra/
