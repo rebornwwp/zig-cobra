@@ -1,5 +1,7 @@
 # zig-cobra
 
+[English](README.md) | [中文](README_cn.md)
+
 <div align="center">
 
 [![Zig](https://img.shields.io/badge/Zig-0.16.0-orange?logo=zig&logoColor=white)](https://ziglang.org/)
