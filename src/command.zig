@@ -498,7 +498,6 @@ pub const Command = struct {
         const se = &stderr_w.interface;
         se.print("{s}", .{output}) catch {};
         stderr_w.flush() catch {};
-        
     }
 
     pub fn executeContext(self: *Command, io: std.Io) anyerror!void {

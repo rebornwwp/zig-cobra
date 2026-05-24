@@ -3,8 +3,17 @@
     .fingerprint = 0x171a4821ec9cd848,
     .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // 本地开发用 .path；发布后改为 .url
+        .pflag = .{
+            .path = "../zig-pflag",
+            // .url = "https://github.com/rebornwwp/zig-pflag/archive/refs/heads/main.tar.gz",
+            // .hash = "...",  // zig build 会提示正确值
+        },
+    },
     .paths = .{
         "build.zig",
         "src",
+        "demo",
     },
 }
