@@ -5,7 +5,9 @@ const util = @import("util.zig");
 
 pub fn genMarkdown(cmd: *Command, io: std.Io, writer: *std.Io.Writer) anyerror!void {
     return genMarkdownCustom(cmd, io, writer, struct {
-        fn inner(s: []const u8) []const u8 { return s; }
+        fn inner(s: []const u8) []const u8 {
+            return s;
+        }
     }.inner);
 }
 
@@ -19,8 +21,14 @@ pub fn genMarkdownCustom(cmd: *Command, io: std.Io, writer: *std.Io.Writer, link
 }
 
 pub fn genMarkdownTree(cmd: *Command, io: std.Io, dir: []const u8) anyerror!void {
-    _ = cmd; _ = io; _ = dir;
+    _ = cmd;
+    _ = io;
+    _ = dir;
 }
 pub fn genMarkdownTreeCustom(cmd: *Command, io: std.Io, dir: []const u8, file_prepender: anytype, link_handler: anytype) anyerror!void {
-    _ = cmd; _ = io; _ = dir; _ = file_prepender; _ = link_handler;
+    _ = cmd;
+    _ = io;
+    _ = dir;
+    _ = file_prepender;
+    _ = link_handler;
 }

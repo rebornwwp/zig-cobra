@@ -11,5 +11,15 @@ pub const GenManHeader = struct {
     manual: []const u8 = "",
 };
 
-pub fn genMan(cmd: *Command, io: std.Io, header: ?*GenManHeader, writer: *std.Io.Writer) anyerror!void { _ = cmd; _ = io; _ = header; _ = writer; }
-pub fn genManTree(cmd: *Command, io: std.Io, header: ?*GenManHeader, dir: []const u8) anyerror!void { _ = cmd; _ = io; _ = header; _ = dir; }
+pub fn genMan(cmd: *Command, io: std.Io, header: ?*GenManHeader, writer: *std.Io.Writer) anyerror!void {
+    _ = cmd;
+    _ = io;
+    _ = header;
+    _ = writer;
+}
+pub fn genManTree(cmd: *Command, io: std.Io, header: ?*GenManHeader, dir: []const u8) anyerror!void {
+    _ = cmd;
+    _ = io;
+    _ = header;
+    _ = dir;
+}
