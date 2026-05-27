@@ -24,11 +24,11 @@ dockr *args:
 
 # 格式化代码
 fmt:
-    zig fmt src/ dockr/ demo/
+    zig fmt src/ examples/
 
 # 检查格式（不修改）
 fmt-check:
-    zig fmt --check src/ dockr/ demo/
+    zig fmt --check src/ examples/
 
 # 清理构建产物
 clean:

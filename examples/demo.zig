@@ -13,15 +13,15 @@ pub fn main(init: std.process.Init) !void {
     flags.stringVarP(&state.name, "name", "n", "world", "your name") catch {};
 
     var helloCmd = cobra.Command{
-        .use   = "hello",
+        .use = "hello",
         .short = "Say hello to someone",
-        .run   = helloRun,
+        .run = helloRun,
         .flags = &flags,
     };
     helloCmd.iflags = @ptrCast(@alignCast(&state));
 
     var rootCmd = cobra.Command{
-        .use   = "demo",
+        .use = "demo",
         .short = "A friendly CLI demo",
         .flags = &flags,
     };

@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
     const demo_exe = b.addExecutable(.{
         .name = "demo",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("demo/main.zig"),
+            .root_source_file = b.path("examples/demo.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -53,7 +53,7 @@ pub fn build(b: *std.Build) void {
     const dockr_exe = b.addExecutable(.{
         .name = "dockr",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("dockr/main.zig"),
+            .root_source_file = b.path("examples/dockr/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

@@ -5,14 +5,19 @@ const Command = cobra.Command;
 const types = @import("types.zig");
 
 pub fn init_run(gpa: std.mem.Allocator, cmd: *Command, flags: *pflag.FlagSet, opts: *types.ContainerRunOpts) void {
+    // Initialize StringSliceState wrappers so pflag can manage memory correctly
+    opts.publish_state = .{ .value = &opts.publish_list, .gpa = gpa };
+    opts.volume_state = .{ .value = &opts.volume_list, .gpa = gpa };
+    opts.env_state = .{ .value = &opts.env_list, .gpa = gpa };
+
     flags.* = pflag.FlagSet.init(gpa, "container run");
     flags.stringVarP(&opts.name, "name", "", "", "assign a name") catch {};
     flags.boolVarP(&opts.detach, "detach", "d", false, "run in background") catch {};
     flags.boolVarP(&opts.interactive, "interactive", "i", false, "keep STDIN open") catch {};
     flags.boolVarP(&opts.tty, "tty", "t", false, "allocate a pseudo-TTY") catch {};
-    flags.stringSliceVarP(&opts.publish, "publish", "p", &.{}, "publish container ports") catch {};
-    flags.stringSliceVarP(&opts.volume, "volume", "v", &.{}, "bind mount a volume") catch {};
-    flags.stringSliceVarP(&opts.env, "env", "e", &.{}, "set environment variables") catch {};
+    flags.stringSliceVarP(&opts.publish_state, "publish", "p", &.{}, "publish container ports") catch {};
+    flags.stringSliceVarP(&opts.volume_state, "volume", "v", &.{}, "bind mount a volume") catch {};
+    flags.stringSliceVarP(&opts.env_state, "env", "e", &.{}, "set environment variables") catch {};
     flags.boolVarP(&opts.rm, "rm", "", false, "auto-remove on exit") catch {};
     cmd.* = Command{
         .use = "run [OPTIONS] IMAGE [COMMAND] [ARG...]",
