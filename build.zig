@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
 
     const run_demo = b.addRunArtifact(demo_exe);
     run_demo.step.dependOn(&install_demo.step);
-    if (b.args) |args| run_demo.addArgs(args);
+    run_demo.addPassthruArgs();
     const run_demo_step = b.step("run-demo", "Run demo app");
     run_demo_step.dependOn(&run_demo.step);
 
@@ -67,7 +67,7 @@ pub fn build(b: *std.Build) void {
 
     const run_dockr = b.addRunArtifact(dockr_exe);
     run_dockr.step.dependOn(&install_dockr.step);
-    if (b.args) |args| run_dockr.addArgs(args);
+    run_dockr.addPassthruArgs();
     const run_dockr_step = b.step("run-dockr", "Run Docker-style demo");
     run_dockr_step.dependOn(&run_dockr.step);
 
