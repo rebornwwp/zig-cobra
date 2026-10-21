@@ -2,6 +2,13 @@
 
 All notable changes to zig-cobra will be documented in this file.
 
+## [0.2.0] - 2026-10-21
+
+### Changed
+- Port from Zig 0.16.0 to Zig 0.17.0
+- `build.zig`: `b.args` → `addPassthruArgs()` (Zig 0.17 build system breaking change)
+- `build.zig.zon`: `minimum_zig_version` updated to `0.17.0`
+
 ## [0.1.0] - 2026-05-24
 
 ### Added
