@@ -1,6 +1,6 @@
-# zig-cobra — Go Cobra CLI 框架的 Zig 0.16.0 移植
+# zig-cobra — Go Cobra CLI 框架的 Zig 0.17.0 移植
 
-> **项目目标**：将 spf13/cobra 逐文件、逐函数、逐结构体 1:1 迁移到 Zig 0.16.0。
+> **项目目标**：将 spf13/cobra 逐文件、逐函数、逐结构体 1:1 迁移到 Zig 0.17.0。
 > **当前状态**：pflag 已集成，83 测试全过，demo 正常工作。
 > **指导文档**：[docs/migration-guide.md](docs/migration-guide.md)
 
@@ -9,7 +9,7 @@
 | 依赖 | 方式 | 说明 |
 |------|------|------|
 | [zig-pflag](https://github.com/rebornwwp/zig-pflag) | `build.zig.zon` `.path = "../zig-pflag"` | 本地引用 |
-| Zig 0.16.0 | 系统安装 | `zigup 0.16.0` |
+| Zig 0.17.0 | 系统安装 | `brew install zig` |
 
 在 `build.zig.zon` 中声明，在 `build.zig` 中通过 `b.dependency("pflag", .{})` 获取，用 `pflag_dep.module("pflag")` 拿到模块。
 
@@ -31,8 +31,8 @@ zig build test -Doptimize=ReleaseFast  # release 模式测试
 
 ```
 zig-cobra/
-├── build.zig                     # Zig 0.16 构建脚本 (createModule + addLibrary)
-├── build.zig.zon                 # 包定义 (.name = .cobra, 0.16 fingerprint)
+├── build.zig                     # Zig 0.17 构建脚本 (createModule + addLibrary)
+├── build.zig.zon                 # 包定义 (.name = .cobra, 0.17 fingerprint)
 ├── cobra/                        # 原始 Go 源码 (参考用，不改)
 ├── docs/
 │   └── migration-guide.md        # 迁移实战指南 (547行，详细记录每轮修复)
