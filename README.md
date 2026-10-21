@@ -4,13 +4,13 @@
 
 <div align="center">
 
-[![Zig](https://img.shields.io/badge/Zig-0.16.0-orange?logo=zig&logoColor=white)](https://ziglang.org/)
+[![Zig](https://img.shields.io/badge/Zig-0.17.0-orange?logo=zig&logoColor=white)](https://ziglang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-beta-yellow)](https://github.com/rebornwwp/zig-cobra)
 
 </div>
 
-A CLI framework for **Zig 0.16.0**, ported from Go's [spf13/cobra](https://github.com/spf13/cobra).
+A CLI framework for **Zig 0.17.0**, ported from Go's [spf13/cobra](https://github.com/spf13/cobra).
 
 Built on [rebornwwp/zig-pflag](https://github.com/rebornwwp/zig-pflag) for POSIX/GNU-style flag parsing.
 

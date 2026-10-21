@@ -16,6 +16,6 @@ zig fmt src/ dockr/ demo/
 
 ## Code Style
 
-- Zig 0.16.0 standard library conventions
+- Zig 0.17.0 standard library conventions
 - `zig fmt` for formatting
 - All Command instances must have stack-lifetime; avoid heap-allocated Commands

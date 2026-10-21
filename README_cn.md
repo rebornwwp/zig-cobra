@@ -2,13 +2,13 @@
 
 <div align="center">
 
-[![Zig](https://img.shields.io/badge/Zig-0.16.0-orange?logo=zig&logoColor=white)](https://ziglang.org/)
+[![Zig](https://img.shields.io/badge/Zig-0.17.0-orange?logo=zig&logoColor=white)](https://ziglang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-beta-yellow)](https://github.com/rebornwwp/zig-cobra)
 
 </div>
 
-面向 **Zig 0.16.0** 的 CLI 框架，从 Go 的 [spf13/cobra](https://github.com/spf13/cobra) 移植而来。
+面向 **Zig 0.17.0** 的 CLI 框架，从 Go 的 [spf13/cobra](https://github.com/spf13/cobra) 移植而来。
 
 基于 [rebornwwp/zig-pflag](https://github.com/rebornwwp/zig-pflag) 实现 POSIX/GNU 风格的 flag 解析。
 
