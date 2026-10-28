@@ -330,7 +330,7 @@ var cmd = cobra.Command{
 
 ## 构建
 
-需要 **Zig 0.16.0**。
+需要 **Zig 0.17.0**。
 
 ```bash
 zig build                  # 构建库
