@@ -50,7 +50,7 @@ fn onlyValidArgsInner(cmd: *Command, args: []const []const u8) anyerror!void {
     for (args) |arg| {
         var found = false;
         for (cmd.valid_args) |valid| {
-            if (std.mem.startsWith(u8, valid, arg)) {
+            if (std.mem.eql(u8, valid, arg)) {
                 found = true;
                 break;
             }
@@ -82,7 +82,7 @@ fn legacyArgsInner(cmd: *Command, args: []const []const u8) anyerror!void {
 pub fn noArgs() PositionalArgs {
     return .{ .simple = noArgsInner };
 }
-/// All args must be present in Command.valid_args (prefix match).
+/// All args must exactly match an entry in Command.valid_args (Go parity: exact match).
 pub fn onlyValidArgs() PositionalArgs {
     return .{ .simple = onlyValidArgsInner };
 }

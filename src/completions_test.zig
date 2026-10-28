@@ -50,33 +50,48 @@ test "CompletionOptions default values" {
 
 test "noFileCompletions returns no_file_comp directive" {
     var cmd = TestHelper.makeCommand("test", TestHelper.emptyRun);
-    const result = try completions.noFileCompletions(&cmd, &.{}, "");
+    const cf = completions.noFileCompletions();
+    const result = try cf.invoke(&cmd, &.{}, "");
     try std.testing.expect(result.completions.len == 0);
     try std.testing.expect(result.directive.nofilecomp);
 }
 
 test "fixedCompletions returns predefined choices" {
-    const choices = [_]completions.Completion{ "one", "two", "three" };
-    const fn_ptr = completions.fixedCompletions(&choices, .no_file_comp);
+    const cf = completions.fixedCompletions(&.{ "one", "two", "three" }, .no_file_comp);
     var cmd = TestHelper.makeCommand("test", TestHelper.emptyRun);
-    const result = try fn_ptr(&cmd, &.{}, "");
-    try std.testing.expectEqual(@as(usize, 0), result.completions.len);
+    const result = try cf.invoke(&cmd, &.{}, "");
+    try std.testing.expectEqual(@as(usize, 3), result.completions.len);
+    try std.testing.expectEqualStrings("one", result.completions[0]);
+    try std.testing.expectEqualStrings("three", result.completions[2]);
     try std.testing.expect(result.directive.nofilecomp);
 }
 
-test "completionWithDesc returns choice" {
-    const result = completions.completionWithDesc("choice", "description");
-    try std.testing.expectEqualStrings("choice", result);
+test "completionWithDesc joins with tab" {
+    const result = try completions.completionWithDesc(gpa, "choice", "description");
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings("choice\tdescription", result);
+}
+
+test "directive int encoding matches Go" {
+    try std.testing.expectEqual(@as(u8, 0), completions.ShellCompDirective.default.toInt());
+    try std.testing.expectEqual(@as(u8, 1), completions.ShellCompDirective.error_flag.toInt());
+    try std.testing.expectEqual(@as(u8, 2), completions.ShellCompDirective.no_space.toInt());
+    try std.testing.expectEqual(@as(u8, 4), completions.ShellCompDirective.no_file_comp.toInt());
+    try std.testing.expectEqual(@as(u8, 8), completions.ShellCompDirective.filter_file_ext.toInt());
+    try std.testing.expectEqual(@as(u8, 16), completions.ShellCompDirective.filter_dirs.toInt());
+    try std.testing.expectEqual(@as(u8, 32), completions.ShellCompDirective.keep_order.toInt());
 }
 
 test "compDebug does not crash" {
-    completions.compDebug("test", false);
-    completions.compDebugln("test", false);
+    const io = std.Io.Threaded.global_single_threaded.*.io();
+    completions.compDebug(io, "test", false);
+    completions.compDebugln(io, "test", false);
 }
 
 test "compError does not crash" {
-    completions.compError("test");
-    completions.compErrorln("test");
+    const io = std.Io.Threaded.global_single_threaded.*.io();
+    completions.compError(io, "test");
+    completions.compErrorln(io, "test");
 }
 
 test "const strings are correct" {

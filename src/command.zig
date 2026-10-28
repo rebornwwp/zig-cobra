@@ -1,12 +1,21 @@
 //! Command is the core of cobra — a command abstraction for your CLI application.
 //! Maps 1:1 from cobra/command.go
+//!
+//! Memory model notes (Zig-specific):
+//! - Command instances should have stack lifetime; user commands must not be heap-allocated.
+//!   EXCEPTION: internal helper commands (help, completion, __complete) created by this module
+//!   are heap-allocated via the gpa passed to executeWrapper/execute and freed in deinit().
+//! - Persistent flags are merged into a command's own flagset as *borrowed* pointers for the
+//!   duration of flag parsing and removed afterwards, so no Flag is ever freed twice. Display
+//!   views (localFlags/inheritedFlags) are built the same way and cleared in deinit().
 const std = @import("std");
 pub const pflag = @import("pflag");
 
-const Completion = @import("completions.zig").Completion;
-const ShellCompDirective = @import("completions.zig").ShellCompDirective;
-const CompletionFuncType = @import("completions.zig").CompletionFunc;
-const CompletionOptions = @import("completions.zig").CompletionOptions;
+const completions_mod = @import("completions.zig");
+const Completion = completions_mod.Completion;
+const ShellCompDirective = completions_mod.ShellCompDirective;
+const CompletionFuncType = completions_mod.CompletionFunc;
+const CompletionOptions = completions_mod.CompletionOptions;
 const PositionalArgs = @import("args.zig").PositionalArgs;
 
 /// Annotation key for flags set internally by cobra
@@ -17,6 +26,11 @@ pub const CommandDisplayNameAnnotation = "cobra_annotation_command_display_name"
 pub const help_flag_name = "help";
 /// Standard name for the help command
 pub const help_command_name = "help";
+/// Standard name for the version flag
+pub const version_flag_name = "version";
+
+/// Annotation key (pflag-compatible) marking a flag as required.
+pub const bash_comp_one_required_flag = "__cobra_bash_comp_one_required_flag";
 
 /// Flag parse error whitelist: controls which parse errors are silently ignored.
 pub const FParseErrWhitelist = struct {
@@ -36,7 +50,8 @@ pub const Group = struct {
     title: []const u8,
 };
 
-/// Template function: used for custom help output templates.
+/// Template function descriptor. NOTE: custom templates are currently stored verbatim but
+/// NOT rendered — help/usage output is produced by the built-in renderer. Kept for API parity.
 pub const TmplFunc = struct {
     /// Go template string
     tmpl: []const u8,
@@ -53,9 +68,49 @@ pub const UsageFuncType = *const fn (cmd: *Command) anyerror!void;
 /// Custom flag error handler signature: (cmd, err) -> error!void
 pub const FlagErrorFuncType = *const fn (cmd: *Command, err: anyerror) anyerror!void;
 
+/// Execution state shared with library-internal commands (help, completion).
+/// Zig has no closures, so io/gpa for internal command callbacks are staged here by
+/// execute()/executeWrapper() before dispatch. Single-threaded CLI use only.
+var exec_state: struct {
+    io: ?std.Io = null,
+    gpa: ?std.mem.Allocator = null,
+} = .{};
+
+/// Fallback stdout writer used when no out_writer is configured.
+var fallback_out: ?std.Io.File.Writer = null;
+var fallback_out_buf: [8192]u8 = undefined;
+/// Fallback stderr writer used when no err_writer is configured.
+var fallback_err: ?std.Io.File.Writer = null;
+var fallback_err_buf: [8192]u8 = undefined;
+/// Fallback stdin reader used when no in_reader is configured.
+var fallback_in: ?std.Io.File.Reader = null;
+var fallback_in_buf: [4096]u8 = undefined;
+
+pub fn defaultStdout(io: std.Io) *std.Io.Writer {
+    if (fallback_out == null) {
+        fallback_out = std.Io.File.Writer.init(std.Io.File.stdout(), io, &fallback_out_buf);
+    }
+    return &fallback_out.?.interface;
+}
+
+pub fn defaultStderr(io: std.Io) *std.Io.Writer {
+    if (fallback_err == null) {
+        fallback_err = std.Io.File.Writer.init(std.Io.File.stderr(), io, &fallback_err_buf);
+    }
+    return &fallback_err.?.interface;
+}
+
+fn defaultStdin(io: std.Io) *std.Io.Reader {
+    if (fallback_in == null) {
+        fallback_in = std.Io.File.Reader.init(std.Io.File.stdin(), io, &fallback_in_buf);
+    }
+    return &fallback_in.?.interface;
+}
+
 /// Command is the core struct of cobra, representing a single CLI command.
 /// All fields are public and can be set during initialization.
-/// Important: Command instances should have stack lifetime; avoid heap allocation.
+/// Important: user Command instances should have stack lifetime; avoid heap allocation
+/// (library-internal helper commands are the documented exception, freed in deinit).
 pub const Command = struct {
     /// Usage line, e.g. "serve [flags] [args]". The first word is the command name.
     use: []const u8,
@@ -89,15 +144,17 @@ pub const Command = struct {
     pre_run: ?RunFunc = null,
     /// Pre-run hook (fallible)
     pre_run_e: ?RunEFunc = null,
-    /// Post-run hook: executed after this command's run
+    /// Post-run hook: executed after this command's run (only when run succeeds)
     post_run: ?RunFunc = null,
     /// Post-run hook (fallible)
     post_run_e: ?RunEFunc = null,
-    /// Persistent pre-run hook: executed before run for all commands in the subtree
+    /// Persistent pre-run hook: executed before run (nearest in chain wins,
+    /// unless cobra.enable_traverse_run_hooks is true)
     persistent_pre_run: ?RunFunc = null,
     /// Persistent pre-run hook (fallible)
     persistent_pre_run_e: ?RunEFunc = null,
-    /// Persistent post-run hook: executed after run for all commands in the subtree
+    /// Persistent post-run hook: executed after run (nearest in chain wins,
+    /// unless cobra.enable_traverse_run_hooks is true)
     persistent_post_run: ?RunFunc = null,
     /// Persistent post-run hook (fallible)
     persistent_post_run_e: ?RunEFunc = null,
@@ -105,7 +162,7 @@ pub const Command = struct {
     fparse_err_whitelist: FParseErrWhitelist = .{},
     /// Completion behavior configuration
     completion_options: CompletionOptions = .{},
-    /// Run on all child commands, not just the matched one
+    /// Resolve commands with Traverse semantics (parse flags at every level)
     traverse_children: bool = false,
     /// Hide this command from help output
     hidden: bool = false,
@@ -127,7 +184,7 @@ pub const Command = struct {
     args_validator: ?PositionalArgs = null,
     /// Dynamic argument completion function
     valid_args_function: ?CompletionFuncType = null,
-    /// Command group list
+    /// Command group list (groups shown in help under their titles)
     commandgroups: std.ArrayListUnmanaged(*Group) = .empty,
     /// Group ID for the help command
     help_command_group_id: []const u8 = "",
@@ -141,11 +198,11 @@ pub const Command = struct {
     flag_error_func: ?FlagErrorFuncType = null,
     /// Error output prefix
     err_prefix: []const u8 = "",
-    /// Custom usage template
+    /// Custom usage template (stored for API parity; not rendered — see TmplFunc note)
     usage_template: []const u8 = "",
-    /// Custom help template
+    /// Custom help template (stored for API parity; not rendered — see TmplFunc note)
     help_template: []const u8 = "",
-    /// Custom version template
+    /// Custom version template (stored for API parity; not rendered — see TmplFunc note)
     version_template: []const u8 = "",
     /// Parsed command-line arguments
     args_slice: []const []const u8 = &.{},
@@ -165,19 +222,52 @@ pub const Command = struct {
     err_writer: ?*std.Io.Writer = null,
     /// Custom stdin reader
     in_reader: ?*std.Io.Reader = null,
-    /// Local flag set (pointer to external FlagSet)
+    /// Local flag set (pointer to external FlagSet; owned_* variants are library-allocated)
     flags_ptr: ?*pflag.FlagSet = null,
     /// Persistent flag set (automatically inherited by subcommands)
     pflags: ?*pflag.FlagSet = null,
-    /// Local flags inherited from parent only
+    /// Local flags view (own flags + own persistent, excluding inherited) — borrowed, library-owned
     lflags: ?*pflag.FlagSet = null,
-    /// Flags inherited from parent (can be cast to arbitrary pointer type to pass user data)
+    /// Inherited flags view (persistent flags of ancestors) — borrowed, library-owned
     iflags: ?*pflag.FlagSet = null,
-    /// Union of all parent persistent flag sets
+    /// Union of all parent persistent flag sets — borrowed, library-owned
     parents_pflags: ?*pflag.FlagSet = null,
-    /// Local non-persistent flags
+    /// Local non-persistent flags view — borrowed, library-owned
     lnpflags: ?*pflag.FlagSet = null,
-    /// Flag error buffer
+    /// Opaque user data (e.g. pointer to application state)
+    user_data: ?*anyopaque = null,
+
+    // ─── Library-owned storage (do not set manually) ───
+    owned_flags: ?pflag.FlagSet = null,
+    owned_pflags: ?pflag.FlagSet = null,
+    lflags_storage: ?pflag.FlagSet = null,
+    iflags_storage: ?pflag.FlagSet = null,
+    parents_pflags_storage: ?pflag.FlagSet = null,
+    lnpflags_storage: ?pflag.FlagSet = null,
+    /// Persistent storage for the auto-registered --help flag value
+    help_flag_value: bool = false,
+    /// Persistent storage for the auto-registered --version flag value
+    version_flag_value: bool = false,
+    /// Internal heap-allocated helper commands (help/completion/__complete), freed in deinit
+    owned_internal_cmds: std.ArrayListUnmanaged(*Command) = .empty,
+    /// Flag completion function registry (RegisterFlagCompletionFunc)
+    flag_completions: std.StringHashMapUnmanaged(CompletionFuncType) = .empty,
+    /// Allocated annotation value slices (flag groups), freed in deinit
+    owned_annotation_values: std.ArrayListUnmanaged([]const []const u8) = .empty,
+    /// Allocated flag-group key strings, freed in deinit
+    owned_group_keys: std.ArrayListUnmanaged([]u8) = .empty,
+    /// Boolean storage for library-internal flags (e.g. completion --no-descriptions)
+    internal_flag_bool: bool = false,
+    /// Detailed error message buffer (validation messages mirror Go's error strings)
+    err_msg_buf: [2048]u8 = undefined,
+    err_msg_len: usize = 0,
+    /// Scratch buffers for computed strings
+    path_buf: [512]u8 = undefined,
+    use_line_buf: [640]u8 = undefined,
+    alias_buf: [768]u8 = undefined,
+    help_usage_buf: [128]u8 = undefined,
+    version_usage_buf: [160]u8 = undefined,
+    /// Flag error buffer (legacy field)
     flag_error_buf: ?*std.ArrayListUnmanaged(u8) = null,
     /// Maximum use field length among subcommands (for alignment)
     commands_max_use_len: usize = 0,
@@ -186,7 +276,8 @@ pub const Command = struct {
     /// Maximum command name length among subcommands
     commands_max_name_len: usize = 0,
 
-    // ─── Methods ───
+    // ─── Setters (Go API parity) ───
+
     pub fn setArgs(self: *Command, a: []const []const u8) void {
         self.args_slice = a;
     }
@@ -225,22 +316,34 @@ pub const Command = struct {
     pub fn setErrPrefix(self: *Command, s: []const u8) void {
         self.err_prefix = s;
     }
+    pub fn setUsageTemplate(self: *Command, tmpl: []const u8) void {
+        self.usage_template = tmpl;
+    }
+    pub fn setHelpTemplate(self: *Command, tmpl: []const u8) void {
+        self.help_template = tmpl;
+    }
+    pub fn setVersionTemplate(self: *Command, tmpl: []const u8) void {
+        self.version_template = tmpl;
+    }
 
-    pub fn errOrStderr(self: *Command) *std.Io.Writer {
+    // ─── IO resolution (never returns undefined) ───
+
+    pub fn errOrStderr(self: *const Command, io: std.Io) *std.Io.Writer {
         if (self.err_writer) |w| return w;
-        if (self.parent) |p| return p.errOrStderr();
-        return undefined;
+        if (self.parent) |p| return p.errOrStderr(io);
+        return defaultStderr(io);
     }
-    pub fn outOrStdout(self: *Command) *std.Io.Writer {
+    pub fn outOrStdout(self: *const Command, io: std.Io) *std.Io.Writer {
         if (self.out_writer) |w| return w;
-        if (self.parent) |p| return p.outOrStdout();
-        return undefined;
+        if (self.parent) |p| return p.outOrStdout(io);
+        return defaultStdout(io);
     }
-    pub fn inOrStdin(self: *Command) *std.Io.Reader {
+    pub fn inOrStdin(self: *const Command, io: std.Io) *std.Io.Reader {
         if (self.in_reader) |r| return r;
-        if (self.parent) |p| return p.inOrStdin();
-        return undefined;
+        if (self.parent) |p| return p.inOrStdin(io);
+        return defaultStdin(io);
     }
+
     pub fn hasParent(self: *const Command) bool {
         return self.parent != null;
     }
@@ -248,33 +351,46 @@ pub const Command = struct {
         return self.parent;
     }
     pub fn root(self: *Command) *Command {
-        if (self.hasParent()) return self.parent.?.root();
-        return self;
+        var c: *Command = self;
+        while (c.parent) |p| : (c = p) {}
+        return c;
     }
+
+    // ─── Name/path helpers ───
 
     pub fn name(self: *const Command) []const u8 {
         if (std.mem.indexOfScalar(u8, self.use, ' ')) |i| return self.use[0..i];
         return self.use;
     }
+
+    /// Returns the annotation-provided display name, or name() when unset (Go parity).
     pub fn displayName(self: *const Command) []const u8 {
+        if (self.annotations.get(CommandDisplayNameAnnotation)) |vals| {
+            if (vals.len > 0) return vals[0];
+        }
         return self.name();
     }
 
+    /// Full command path, e.g. "root sub leaf". Rendered into an internal buffer;
+    /// valid until the next commandPath() call on the same Command.
     pub fn commandPath(self: *Command) []const u8 {
-        if (self.hasParent()) {
-            // parent path + " " + name (needs allocator for concat in full impl)
+        var w = std.Io.Writer.fixed(&self.path_buf);
+        self.writeCommandPath(&w);
+        return self.path_buf[0..w.end];
+    }
+
+    fn writeCommandPath(self: *Command, w: *std.Io.Writer) void {
+        if (self.parent) |p| {
+            p.writeCommandPath(w);
+            w.print(" {s}", .{self.displayName()}) catch {};
+        } else {
+            w.print("{s}", .{self.displayName()}) catch {};
         }
-        return self.displayName();
     }
 
     pub fn hasAlias(self: *const Command, s: []const u8) bool {
-        const enable_case_insensitive = @import("cobra.zig").enable_case_insensitive;
         for (self.aliases) |a| {
-            if (enable_case_insensitive) {
-                if (std.ascii.eqlIgnoreCase(a, s)) return true;
-            } else {
-                if (std.mem.eql(u8, a, s)) return true;
-            }
+            if (@import("cobra.zig").commandNameMatches(a, s)) return true;
         }
         return false;
     }
@@ -300,22 +416,30 @@ pub const Command = struct {
         return self.runnable() or self.hasAvailableSubCommands();
     }
     pub fn hasAvailableSubCommands(self: *const Command) bool {
-        for (self.commands.items) |sub| if (sub.isAvailableCommand()) return true;
+        for (self.commands.items) |sub| {
+            if (sub.isAvailableCommand()) return true;
+            if (sub == self.help_command) return true;
+        }
         return false;
     }
     pub fn isAdditionalHelpTopicCommand(self: *const Command) bool {
+        // Go parity: a non-runnable, non-hidden, non-deprecated command is a help
+        // topic when ALL of its subcommands (if any) are help topics too.
         if (self.runnable() or self.deprecated.len != 0 or self.hidden) return false;
-        for (self.commands.items) |sub| if (!sub.isAdditionalHelpTopicCommand()) return false;
+        for (self.commands.items) |sub| {
+            if (!sub.isAdditionalHelpTopicCommand()) return false;
+        }
         return true;
     }
     pub fn hasHelpSubCommands(self: *const Command) bool {
-        for (self.commands.items) |sub| if (sub.isAdditionalHelpTopicCommand()) return true;
+        for (self.commands.items) |sub| {
+            if (sub.isAdditionalHelpTopicCommand()) return true;
+        }
         return false;
     }
 
     pub fn getCommands(self: *Command) []*Command {
-        const enable_command_sorting = @import("cobra.zig").enable_command_sorting;
-        if (enable_command_sorting and !self.commands_are_sorted) {
+        if (@import("cobra.zig").enable_command_sorting and !self.commands_are_sorted) {
             std.mem.sort(*Command, self.commands.items, {}, lessThanByName);
             self.commands_are_sorted = true;
         }
@@ -328,15 +452,13 @@ pub const Command = struct {
 
     pub fn addCommand(self: *Command, gpa: std.mem.Allocator, cmds: []const *Command) void {
         for (cmds) |cmd| {
-            if (cmd == self) @panic("Command can't be a child of itself");
+            if (cmd == self) @panic("cobra: command can't be a child of itself");
             cmd.parent = self;
-            const ul = cmd.use.len;
-            if (ul > self.commands_max_use_len) self.commands_max_use_len = ul;
+            if (cmd.use.len > self.commands_max_use_len) self.commands_max_use_len = cmd.use.len;
             const cpl = cmd.commandPath().len;
             if (cpl > self.commands_max_command_path_len) self.commands_max_command_path_len = cpl;
-            const nl = cmd.name().len;
-            if (nl > self.commands_max_name_len) self.commands_max_name_len = nl;
-            self.commands.append(gpa, cmd) catch @panic("OOM");
+            if (cmd.name().len > self.commands_max_name_len) self.commands_max_name_len = cmd.name().len;
+            self.commands.append(gpa, cmd) catch @panic("cobra: OOM in addCommand");
             self.commands_are_sorted = false;
         }
     }
@@ -345,77 +467,143 @@ pub const Command = struct {
         return self.commandgroups.items;
     }
     pub fn containsGroup(self: *const Command, gid: []const u8) bool {
-        for (self.commandgroups.items) |g| if (std.mem.eql(u8, g.id, gid)) return true;
+        for (self.commandgroups.items) |g| {
+            if (std.mem.eql(u8, g.id, gid)) return true;
+        }
         return false;
     }
     pub fn allChildCommandsHaveGroup(self: *const Command) bool {
         for (self.commands.items) |sub| {
-            if ((sub.isAvailableCommand() or sub == self.help_command) and sub.group_id.len == 0) return false;
+            const considered = sub.isAvailableCommand() or sub == self.help_command;
+            if (considered and sub.group_id.len == 0) return false;
         }
         return true;
     }
     pub fn addGroup(self: *Command, gpa: std.mem.Allocator, grp: []const *Group) void {
-        self.commandgroups.appendSlice(gpa, grp) catch @panic("OOM");
+        self.commandgroups.appendSlice(gpa, grp) catch @panic("cobra: OOM in addGroup");
     }
+
     pub fn removeCommand(self: *Command, gpa: std.mem.Allocator, cmds: []const *Command) void {
-        var nc = std.ArrayList(*Command).initCapacity(gpa, 8) catch unreachable;
-        defer nc.deinit(gpa);
+        _ = gpa;
+        var write: usize = 0;
         for (self.commands.items) |c| {
             var skip = false;
-            for (cmds) |rc| if (c == rc) {
-                c.parent = null;
-                skip = true;
-                break;
-            };
-            if (!skip) nc.append(gpa, c) catch unreachable;
+            for (cmds) |rc| {
+                if (c == rc) {
+                    c.parent = null;
+                    skip = true;
+                    break;
+                }
+            }
+            if (!skip) {
+                self.commands.items[write] = c;
+                write += 1;
+            }
         }
-        self.commands.deinit(gpa);
-        self.commands = .empty;
-        for (nc.items) |cmd| {
-            self.commands.append(gpa, cmd) catch unreachable;
-        }
+        self.commands.shrinkRetainingCapacity(write);
+        self.commands_are_sorted = false;
     }
+
     pub fn resetCommands(self: *Command, gpa: std.mem.Allocator) void {
-        self.commands.deinit(gpa);
+        for (self.commands.items) |c| c.parent = null;
+        self.commands.clearRetainingCapacity();
+        _ = gpa;
         self.parent = null;
-        self.commands = .empty;
+        self.commands_are_sorted = false;
         self.help_command = null;
         self.parents_pflags = null;
     }
+
     pub fn deinit(self: *Command, gpa: std.mem.Allocator) void {
         for (self.commands.items) |c| c.deinit(gpa);
         self.commands.deinit(gpa);
         self.commandgroups.deinit(gpa);
-    }
-    pub fn findSuggestions(self: *const Command, typed_name: []const u8) []const u8 {
-        const min_dist = if (self.suggestions_minimum_distance <= 0) 2 else self.suggestions_minimum_distance;
-        const ld = @import("cobra.zig").levenshteinDistance;
-        var count: usize = 0;
-        for (self.commands.items) |cmd| {
-            if (cmd.isAvailableCommand() and ld(typed_name, cmd.name(), true) <= min_dist) count += 1;
+        for (self.owned_internal_cmds.items) |c| {
+            gpa.destroy(c);
         }
-        if (count == 0) return "";
-        return "\n\nDid you mean this?";
+        self.owned_internal_cmds.deinit(gpa);
+        self.flag_completions.deinit(gpa);
+        for (self.owned_annotation_values.items) |vals| gpa.free(vals);
+        self.owned_annotation_values.deinit(gpa);
+        for (self.owned_group_keys.items) |k| gpa.free(k);
+        self.owned_group_keys.deinit(gpa);
+        // Owned flag storage: clear borrowed flags first so nothing is double-freed,
+        // then release the FlagSet's own maps.
+        if (self.owned_flags) |*fs| fs.deinit();
+        self.owned_flags = null;
+        self.flags_ptr = null;
+        if (self.owned_pflags) |*fs| fs.deinit();
+        self.owned_pflags = null;
+        self.pflags = null;
+        clearBorrowed(&self.parents_pflags_storage);
+        if (self.parents_pflags_storage) |*fs| fs.deinit();
+        self.parents_pflags_storage = null;
+        self.parents_pflags = null;
+        clearBorrowed(&self.lflags_storage);
+        if (self.lflags_storage) |*fs| fs.deinit();
+        self.lflags_storage = null;
+        self.lflags = null;
+        clearBorrowed(&self.iflags_storage);
+        if (self.iflags_storage) |*fs| fs.deinit();
+        self.iflags_storage = null;
+        self.iflags = null;
+        clearBorrowed(&self.lnpflags_storage);
+        if (self.lnpflags_storage) |*fs| fs.deinit();
+        self.lnpflags_storage = null;
+        self.lnpflags = null;
     }
 
+    // ─── Suggestions ───
+
+    fn suggestionsMinDistance(self: *const Command) usize {
+        return if (self.suggestions_minimum_distance == 0) 2 else self.suggestions_minimum_distance;
+    }
+
+    /// Go's SuggestionsFor: names within Levenshtein distance or having typed_name as prefix.
     pub fn suggestionsFor(self: *const Command, gpa: std.mem.Allocator, typed_name: []const u8) ![][]const u8 {
-        var s = std.ArrayList([]const u8).initCapacity(gpa, 8) catch unreachable;
-        const min_dist = if (self.suggestions_minimum_distance <= 0) 2 else self.suggestions_minimum_distance;
+        var s: std.ArrayListUnmanaged([]const u8) = .empty;
+        const min_dist = self.suggestionsMinDistance();
         const ld = @import("cobra.zig").levenshteinDistance;
         for (self.commands.items) |cmd| {
-            if (cmd.isAvailableCommand()) {
-                if (ld(typed_name, cmd.name(), true) <= min_dist or std.ascii.startsWithIgnoreCase(cmd.name(), typed_name))
-                    try s.append(gpa, cmd.name());
+            if (!cmd.isAvailableCommand() and cmd != self.help_command) continue;
+            if (ld(typed_name, cmd.name(), true) <= min_dist or
+                (typed_name.len > 0 and std.ascii.startsWithIgnoreCase(cmd.name(), typed_name)))
+            {
+                try s.append(gpa, cmd.name());
             }
         }
         return try s.toOwnedSlice(gpa);
     }
 
-    pub fn visitParents(self: *Command, fn_ptr: *const fn (*Command) void) void {
-        if (self.hasParent()) {
-            fn_ptr(self.parent.?);
-            self.parent.?.visitParents(fn_ptr);
+    /// Renders Go's "\n\nDid you mean this?\n\t<suggestion>\n" block into an internal buffer.
+    pub fn findSuggestions(self: *Command, typed_name: []const u8) []const u8 {
+        if (self.disable_suggestions) return "";
+        const min_dist = self.suggestionsMinDistance();
+        const ld = @import("cobra.zig").levenshteinDistance;
+        var buf = std.Io.Writer.fixed(self.err_msg_buf[self.err_msg_len..]);
+        buf.print("\n\nDid you mean this?\n", .{}) catch return self.err_msg_buf[0..self.err_msg_len];
+        var count: usize = 0;
+        for (self.commands.items) |cmd| {
+            if (!cmd.isAvailableCommand() and cmd != self.help_command) continue;
+            const near = ld(typed_name, cmd.name(), true) <= min_dist;
+            const prefixed = typed_name.len > 0 and std.ascii.startsWithIgnoreCase(cmd.name(), typed_name);
+            if (near or prefixed) {
+                buf.print("\t{s}\n", .{cmd.name()}) catch break;
+                count += 1;
+                if (count >= 8) break;
+            }
         }
+        if (count == 0) {
+            // roll back the header
+            return self.err_msg_buf[0..self.err_msg_len];
+        }
+        self.err_msg_len += buf.end;
+        return self.err_msg_buf[0..self.err_msg_len];
+    }
+
+    pub fn visitParents(self: *Command, fn_ptr: *const fn (*Command) void) void {
+        var c: ?*Command = self.parent;
+        while (c) |p| : (c = p.parent) fn_ptr(p);
     }
 
     pub fn errPrefix(self: *const Command) []const u8 {
@@ -424,11 +612,12 @@ pub const Command = struct {
         return "Error:";
     }
 
+    // ─── Output ───
+
     pub fn print(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
-        if (self.out_writer) |w| {
-            w.print(fmt_str, args) catch {};
-        }
-        _ = io;
+        const w = self.outOrStdout(io);
+        w.print(fmt_str, args) catch {};
+        w.flush() catch {};
     }
     pub fn println(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
         self.print(io, fmt_str ++ "\n", args);
@@ -437,7 +626,9 @@ pub const Command = struct {
         self.print(io, fmt_str, args);
     }
     pub fn printErr(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
-        self.print(io, fmt_str, args);
+        const w = self.errOrStderr(io);
+        w.print(fmt_str, args) catch {};
+        w.flush() catch {};
     }
     pub fn printErrln(self: *Command, io: std.Io, comptime fmt_str: []const u8, args: anytype) void {
         self.printErr(io, fmt_str ++ "\n", args);
@@ -446,218 +637,1476 @@ pub const Command = struct {
         self.printErr(io, fmt_str, args);
     }
 
+    // ─── Args validation ───
+
     pub fn validateArgs(self: *Command, args: []const []const u8) anyerror!void {
-        const arbitraryArgs = @import("args.zig").arbitraryArgs;
-        if (self.args_validator) |a| return a.validate(self, args);
-        try arbitraryArgs().validate(self, args);
+        if (self.args_validator) |a| {
+            return a.validate(self, args);
+        }
+        // Go parity: default validator is legacyArgs.
+        return @import("args.zig").legacyArgs().validate(self, args);
     }
 
-    pub fn execute(self: *Command, io: std.Io, a: []const []const u8) anyerror!void {
-        if (self.deprecated.len > 0) self.printErr(io, "Command \"{s}\" is deprecated, {s}\n", .{ self.name(), self.deprecated });
+    // ─── Execution (Go command.go execute() order) ───
 
-        // ── Run hooks: persistent_pre_run (parent chain) → pre_run → persistent_post_run (defer) → post_run
-        @import("cobra.zig").runInitializers();
-        self.executePersistentPreRun();
-        if (self.pre_run) |f| f(self, @constCast(a));
-        defer {
-            if (self.post_run) |f| f(self, @constCast(a));
-            self.executePersistentPostRun();
-            @import("cobra.zig").runFinalizers();
+    pub fn execute(self: *Command, io: std.Io, gpa: std.mem.Allocator, a: []const []const u8) anyerror!void {
+        exec_state = .{ .io = io, .gpa = gpa };
+        if (self.deprecated.len > 0) {
+            self.printErr(io, "Command \"{s}\" is deprecated, {s}\n", .{ self.name(), self.deprecated });
         }
 
-        self.initDefaultHelpFlag();
-        self.initDefaultVersionFlag();
+        self.initDefaultHelpFlag(gpa);
+        self.initDefaultVersionFlag(gpa);
 
-        // ── Setup --help flag
-        var help_requested: bool = false;
-        if (self.flags_ptr != null and self.flags_ptr.?.lookup("help") == null) {
-            self.flags_ptr.?.boolVarP(&help_requested, "help", "h", false, "help for this command") catch {};
-        }
-
-        // ── Parse flags
-        var remaining = a;
-        if (self.flags_ptr != null and !self.disable_flag_parsing and remaining.len > 0) {
-            // Pass FParseErrWhitelist to pflag
-            self.flags_ptr.?.parse_errors_allowlist.unknown_flags = self.fparse_err_whitelist.unknown_flag;
-            self.flags_ptr.?.parse(remaining) catch |err| {
+        var arg_wo_flags: []const []const u8 = a;
+        if (!self.disable_flag_parsing) {
+            // Build merged views (used by validators and help rendering), then parse.
+            self.mergePersistentFlags(gpa);
+            self.parseArgs(a) catch |err| {
                 if (err == error.Help) {
                     self.printHelp(io);
                     return;
                 }
-                if (!self.silence_errors) {
-                    self.printErr(io, "{s} {s}\n", .{ self.errPrefix(), @errorName(err) });
+                if (self.flag_error_func) |f| {
+                    f(self, err) catch {};
                 }
-                if (!self.silence_usage) self.printHelp(io);
+                try self.handleExecError(io, err);
                 return err;
             };
-            remaining = self.flags_ptr.?.argList();
+            arg_wo_flags = self.flags_ptr.?.argList();
         }
 
-        // Show help if requested
+        // --help: our registered flag or a user-provided help flag
+        const help_requested = self.help_flag_value or
+            (if (self.flags_ptr) |fs| (fs.getBool(help_flag_name) catch false) else false);
         if (help_requested) {
             self.printHelp(io);
             return;
         }
 
-        // ── Version flag
-        if (self.version.len > 0 and self.flags_ptr != null) {
-            if (self.flags_ptr.?.lookup("version")) |vf| {
-                if (vf.changed) {
-                    self.print(io, "{s} version {s}\n", .{ self.displayName(), self.version });
-                    return;
+        // --version
+        if (self.version.len > 0) {
+            const version_requested = self.version_flag_value or
+                (if (self.flags_ptr) |fs| fs.changed(version_flag_name) else false);
+            if (version_requested) {
+                const w = self.outOrStdout(io);
+                w.print("{s} version {s}\n", .{ self.displayName(), self.version }) catch {};
+                w.flush() catch {};
+                return;
+            }
+        }
+
+        @import("cobra.zig").runInitializers();
+        defer @import("cobra.zig").runFinalizers();
+
+        self.validateArgs(arg_wo_flags) catch |err| {
+            try self.handleExecError(io, err);
+            return err;
+        };
+
+        const hook_args: [][]const u8 = @constCast(arg_wo_flags);
+
+        self.execPersistentPreRun(hook_args) catch |err| {
+            try self.handleExecError(io, err);
+            return err;
+        };
+        if (self.pre_run_e) |f| {
+            f(self, hook_args) catch |err| {
+                try self.handleExecError(io, err);
+                return err;
+            };
+        } else if (self.pre_run) |f| {
+            f(self, hook_args);
+        }
+
+        self.validateRequiredFlags() catch |err| {
+            try self.handleExecError(io, err);
+            return err;
+        };
+        self.validateFlagGroups() catch |err| {
+            try self.handleExecError(io, err);
+            return err;
+        };
+
+        if (self.run_e) |f| {
+            f(self, hook_args) catch |err| {
+                try self.handleExecError(io, err);
+                return err;
+            };
+        } else if (self.run) |f| {
+            f(self, hook_args);
+        } else {
+            // Go parity: non-runnable command invocation prints help without error.
+            self.printHelp(io);
+            return;
+        }
+
+        if (self.post_run_e) |f| {
+            f(self, hook_args) catch |err| {
+                try self.handleExecError(io, err);
+                return err;
+            };
+        } else if (self.post_run) |f| {
+            f(self, hook_args);
+        }
+        self.execPersistentPostRun(hook_args) catch |err| {
+            try self.handleExecError(io, err);
+            return err;
+        };
+    }
+
+    /// Trims trailing whitespace (std.mem.trimRight was removed in Zig 0.17).
+    fn trimEnd(s: []const u8) []const u8 {
+        var end = s.len;
+        while (end > 0) {
+            const c = s[end - 1];
+            if (c != ' ' and c != '\t' and c != '\n' and c != '\r') break;
+            end -= 1;
+        }
+        return s[0..end];
+    }
+
+    /// Prints "Error: <msg>" (unless silenced) and usage (unless silenced),
+    /// preferring the detailed message staged in err_msg_buf.
+    fn handleExecError(self: *Command, io: std.Io, err: anyerror) anyerror!void {
+        if (!self.silence_errors) {
+            if (self.err_msg_len > 0) {
+                self.printErr(io, "{s} {s}\n", .{ self.errPrefix(), self.err_msg_buf[0..self.err_msg_len] });
+            } else {
+                self.printErr(io, "{s} {s}\n", .{ self.errPrefix(), @errorName(err) });
+            }
+        }
+        self.err_msg_len = 0;
+        if (!self.silence_usage) self.printUsage(io);
+    }
+
+    fn setErrMsg(self: *Command, comptime fmt_str: []const u8, args: anytype) void {
+        var w = std.Io.Writer.fixed(&self.err_msg_buf);
+        w.print(fmt_str, args) catch {};
+        self.err_msg_len = w.end;
+    }
+
+    /// Go parity: only the NEAREST command defining a persistent run hook executes it,
+    /// unless cobra.enable_traverse_run_hooks is enabled (then the whole chain runs).
+    /// Hooks receive the executing command (self), like Go does.
+    fn execPersistentPreRun(self: *Command, args: [][]const u8) anyerror!void {
+        const traverse_hooks = @import("cobra.zig").enable_traverse_run_hooks;
+        var c: ?*Command = self;
+        while (c) |p| : (c = p.parent) {
+            if (p.persistent_pre_run_e) |f| {
+                try f(self, args);
+                if (!traverse_hooks) return;
+            } else if (p.persistent_pre_run) |f| {
+                f(self, args);
+                if (!traverse_hooks) return;
+            }
+        }
+    }
+    fn execPersistentPostRun(self: *Command, args: [][]const u8) anyerror!void {
+        const traverse_hooks = @import("cobra.zig").enable_traverse_run_hooks;
+        var c: ?*Command = self;
+        while (c) |p| : (c = p.parent) {
+            if (p.persistent_post_run_e) |f| {
+                try f(self, args);
+                if (!traverse_hooks) return;
+            } else if (p.persistent_post_run) |f| {
+                f(self, args);
+                if (!traverse_hooks) return;
+            }
+        }
+    }
+
+    // ─── Help / Usage rendering (Go template output parity) ───
+
+    /// Displays the help for this command (Go: Help()).
+    pub fn help(self: *Command, io: std.Io) anyerror!void {
+        if (self.helpFunc()) |f| {
+            f(self, &.{});
+            return;
+        }
+        self.printHelp(io);
+    }
+
+    /// Renders full help (description + usage) to errOrStderr (Go: Help() writes to OutOrStderr).
+    pub fn printHelp(self: *Command, io: std.Io) void {
+        if (self.help_func) |f| {
+            f(self, &.{});
+            return;
+        }
+        const w = self.errOrStderr(io);
+        const desc = self.description();
+        if (desc.len > 0) {
+            const trimmed = trimEnd(desc);
+            w.print("{s}\n\n", .{trimmed}) catch {};
+        }
+        if (self.runnable() or self.hasSubCommands()) {
+            self.renderUsage(w);
+        }
+        w.flush() catch {};
+    }
+
+    /// Long description if set, else short (Go template: or .Long .Short).
+    pub fn description(self: *const Command) []const u8 {
+        if (self.long.len > 0) return self.long;
+        return self.short;
+    }
+
+    /// Renders the usage block (Go's default usage template output).
+    pub fn printUsage(self: *Command, io: std.Io) void {
+        if (self.usage_func) |f| {
+            f(self) catch {};
+            return;
+        }
+        const w = self.errOrStderr(io);
+        self.renderUsage(w);
+        w.flush() catch {};
+    }
+
+    fn renderUsage(self: *Command, w: *std.Io.Writer) void {
+        w.print("Usage:", .{}) catch {};
+        if (self.runnable()) w.print("\n  {s}", .{self.useLine()}) catch {};
+        if (self.hasAvailableSubCommands()) w.print("\n  {s} [command]", .{self.commandPath()}) catch {};
+
+        if (self.aliases.len > 0) {
+            w.print("\n\nAliases:\n  {s}", .{self.nameAndAliases()}) catch {};
+        }
+
+        if (self.hasExample()) {
+            w.print("\n\nExamples:\n{s}", .{self.example}) catch {};
+        }
+
+        if (self.hasAvailableSubCommands()) {
+            const pad = self.subCommandNamePad();
+            if (self.commandgroups.items.len == 0) {
+                w.print("\n\nAvailable Commands:", .{}) catch {};
+                for (self.getCommands()) |sub| {
+                    if (!sub.isAvailableCommand() and sub != self.help_command) continue;
+                    writePaddedName(w, sub.name(), pad);
+                    w.print(" {s}", .{sub.short}) catch {};
+                }
+            } else {
+                for (self.commandgroups.items) |group| {
+                    w.print("\n\n{s}", .{group.title}) catch {};
+                    for (self.getCommands()) |sub| {
+                        if (!std.mem.eql(u8, sub.group_id, group.id)) continue;
+                        if (!sub.isAvailableCommand() and sub != self.help_command) continue;
+                        writePaddedName(w, sub.name(), pad);
+                        w.print(" {s}", .{sub.short}) catch {};
+                    }
+                }
+                if (!self.allChildCommandsHaveGroup()) {
+                    w.print("\n\nAdditional Commands:", .{}) catch {};
+                    for (self.getCommands()) |sub| {
+                        if (!sub.isAvailableCommand() and sub != self.help_command) continue;
+                        if (sub.group_id.len > 0) continue;
+                        writePaddedName(w, sub.name(), pad);
+                        w.print(" {s}", .{sub.short}) catch {};
+                    }
                 }
             }
         }
 
-        try self.validateArgs(remaining);
-        if (self.run_e) |run_e| try run_e(self, @constCast(remaining)) else if (self.run) |run| return run(self, @constCast(remaining));
-    }
+        // Build merged local/inherited views when an allocator is available.
+        if (exec_state.gpa) |g| self.mergePersistentFlags(g);
 
-    fn executePersistentPreRun(self: *Command) void {
-        var cmd: ?*Command = self;
-        while (cmd) |c| : (cmd = c.parent) {
-            if (c.persistent_pre_run) |f| f(c, @constCast(c.args_slice));
-        }
-    }
-    fn executePersistentPostRun(self: *Command) void {
-        var cmd: ?*Command = self;
-        while (cmd) |c| : (cmd = c.parent) {
-            if (c.persistent_post_run) |f| f(c, @constCast(c.args_slice));
-        }
-    }
-
-    /// Print formatted help including description, usage, flags, and subcommands.
-    pub fn printHelp(self: *Command, io: std.Io) void {
-        // Try to get a writer: prefer configured out_writer, fall back to stderr
-        var buf: [4096]u8 = undefined;
-        var help_writer = std.Io.Writer.fixed(&buf);
-        if (self.out_writer) |ow| {
-            help_writer = ow.*;
-        }
-
-        // Description
-        if (self.long.len > 0) {
-            help_writer.print("{s}\n\n", .{self.long}) catch {};
-        } else if (self.short.len > 0) {
-            help_writer.print("{s}\n\n", .{self.short}) catch {};
-        }
-
-        // Usage
-        help_writer.print("Usage:\n", .{}) catch {};
-        if (self.runnable()) {
-            help_writer.print("  {s} [flags]", .{self.commandPath()}) catch {};
-        } else {
-            help_writer.print("  {s} [command]", .{self.commandPath()}) catch {};
-        }
-        help_writer.print("\n", .{}) catch {};
-
-        // Subcommands
-        const subs = self.getCommands();
-        if (subs.len > 0) {
-            help_writer.print("\nAvailable Commands:\n", .{}) catch {};
-            for (subs) |sub| {
-                if (!sub.isAvailableCommand() and !sub.isAdditionalHelpTopicCommand()) continue;
-                help_writer.print("  {s}\t{s}\n", .{ sub.name(), sub.short }) catch {};
+        // Flags: (local = own flags + own persistent, excluding inherited)
+        if (self.hasAvailableLocalFlags()) {
+            w.print("\n\nFlags:\n", .{}) catch {};
+            const local = self.lflags orelse self.flags_ptr;
+            self.renderFlagSetDefaults(w, local, true);
+            // When no merged view exists, still show own persistent flags.
+            if (self.lflags == null) {
+                if (self.pflags) |pf| self.renderFlagSetDefaults(w, pf, true);
             }
         }
 
-        // Flags
-        if (self.flags_ptr != null) {
-            help_writer.print("\nFlags:\n", .{}) catch {};
-            var flag_buf: [4096]u8 = undefined;
-            var fw = std.Io.Writer.fixed(&flag_buf);
-            const saved = self.flags_ptr.?.out_writer;
-            self.flags_ptr.?.out_writer = &fw;
-            self.flags_ptr.?.printDefaults();
-            self.flags_ptr.?.out_writer = saved;
-            const flag_out = std.Io.Writer.buffered(&fw);
-            if (flag_out.len > 0) {
-                help_writer.print("{s}\n", .{flag_out}) catch {};
+        // Global Flags: (inherited persistent flags from ancestors)
+        if (self.hasAvailableInheritedFlags()) {
+            w.print("\n\nGlobal Flags:\n", .{}) catch {};
+            self.renderFlagSetDefaults(w, self.inheritedFlagsView(), true);
+        }
+
+        if (self.hasHelpSubCommands()) {
+            w.print("\n\nAdditional help topics:", .{}) catch {};
+            for (self.getCommands()) |sub| {
+                if (!sub.isAdditionalHelpTopicCommand()) continue;
+                w.print("\n  {s} {s}", .{ sub.name(), sub.short }) catch {};
             }
         }
 
-        if (self.example.len > 0) {
-            help_writer.print("\nExamples:\n  {s}\n", .{self.example}) catch {};
+        if (self.hasAvailableSubCommands()) {
+            w.print("\n\nUse \"{s} [command] --help\" for more information about a command.", .{self.commandPath()}) catch {};
         }
-
-        // Flush to stderr
-        const output = std.Io.Writer.buffered(&help_writer);
-        var stderr_buf: [256]u8 = undefined;
-        var stderr_w = std.Io.File.Writer.init(std.Io.File.stderr(), io, &stderr_buf);
-        const se = &stderr_w.interface;
-        se.print("{s}", .{output}) catch {};
-        stderr_w.flush() catch {};
+        w.print("\n", .{}) catch {};
     }
 
-    pub fn executeContext(self: *Command, io: std.Io) anyerror!void {
+    fn subCommandNamePad(self: *const Command) usize {
+        return self.namePadding();
+    }
+
+    /// Prints "\n  <name>" followed by spaces up to `pad` columns (Go's rpad behavior).
+    fn writePaddedName(w: *std.Io.Writer, name_str: []const u8, pad: usize) void {
+        w.print("\n  {s}", .{name_str}) catch {};
+        var i: usize = name_str.len;
+        while (i < pad) : (i += 1) {
+            w.print(" ", .{}) catch {};
+        }
+    }
+
+    /// Renders a flagset's defaults into w by temporarily redirecting its out_writer.
+    fn renderFlagSetDefaults(self: *Command, w: *std.Io.Writer, fs_opt: ?*pflag.FlagSet, trim: bool) void {
+        _ = self;
+        _ = trim;
+        const fs = fs_opt orelse return;
+        const saved = fs.out_writer;
+        fs.out_writer = w;
+        fs.printDefaults();
+        fs.out_writer = saved;
+    }
+
+    /// Full usage text as an owned, allocated string (Go: UsageString()). Caller frees with gpa.
+    pub fn usageString(self: *Command, gpa: std.mem.Allocator) ![]u8 {
+        var buf: [8192]u8 = undefined;
+        var w = std.Io.Writer.fixed(&buf);
+        self.renderUsage(&w);
+        return gpa.dupe(u8, buf[0..w.end]);
+    }
+
+    pub fn helpFunc(self: *const Command) ?HelpFuncType {
+        if (self.help_func) |f| return f;
+        if (self.hasParent()) return self.parent.?.helpFunc();
+        return null;
+    }
+    pub fn flagErrorFunc(self: *const Command) ?FlagErrorFuncType {
+        if (self.flag_error_func) |f| return f;
+        if (self.hasParent()) return self.parent.?.flagErrorFunc();
+        return null;
+    }
+    pub fn usageFunc(self: *const Command) ?UsageFuncType {
+        if (self.usage_func) |f| return f;
+        if (self.hasParent()) return self.parent.?.usageFunc();
+        return null;
+    }
+    pub fn usageTemplate(self: *const Command) []const u8 {
+        if (self.usage_template.len > 0) return self.usage_template;
+        if (self.hasParent()) return self.parent.?.usageTemplate();
+        return default_usage_template;
+    }
+    pub fn helpTemplate(self: *const Command) []const u8 {
+        if (self.help_template.len > 0) return self.help_template;
+        if (self.hasParent()) return self.parent.?.helpTemplate();
+        return default_help_template;
+    }
+    pub fn versionTemplate(self: *const Command) []const u8 {
+        if (self.version_template.len > 0) return self.version_template;
+        if (self.hasParent()) return self.parent.?.versionTemplate();
+        return default_version_template;
+    }
+
+    // ─── ExecuteC equivalent ───
+
+    /// Executes with the args previously set via setArgs() (Go: Execute()).
+    pub fn executeContext(self: *Command, io: std.Io, gpa: std.mem.Allocator) anyerror!void {
         const a = self.args_slice;
-        return self.execute(io, a);
+        return self.execute(io, gpa, a);
     }
-    pub fn executeWrapper(self: *Command) anyerror!void {
-        const io = @import("std").Io.Threaded.global_single_threaded.*.io();
 
-        // 遍历 args，找到第一个匹配的子命令
-        var cmd: *Command = self;
-        var remaining: []const []const u8 = self.args_slice;
+    /// Top-level entry point (Go: ExecuteC()). Resolves the target command, wires default
+    /// help/completion commands, reports errors with usage, and executes.
+    pub fn executeWrapper(self: *Command, gpa: std.mem.Allocator) anyerror!void {
+        const io = std.Io.Threaded.global_single_threaded.*.io();
+        exec_state = .{ .io = io, .gpa = gpa };
 
-        while (remaining.len > 0) {
-            const arg = remaining[0];
-            // 遇到 flag 停止查找
-            if (isFlagArg(arg)) break;
+        self.initDefaultHelpCmd(gpa);
+        self.initDefaultCompletionCmd(gpa);
+        self.initCompleteCmd(gpa);
+        self.checkCommandGroups();
 
-            var found: ?*Command = null;
-            for (cmd.commands.items) |sub| {
-                if (std.mem.eql(u8, sub.name(), arg) or sub.hasAlias(arg)) {
-                    found = sub;
+        const found = self.findForExec(gpa, self.args_slice);
+        const cmd = found.cmd;
+        if (found.err) |e| {
+            if (!cmd.silence_errors) {
+                if (cmd.err_msg_len > 0) {
+                    cmd.printErr(io, "{s} {s}\n", .{ cmd.errPrefix(), cmd.err_msg_buf[0..cmd.err_msg_len] });
+                } else {
+                    cmd.printErr(io, "{s} {s}\n", .{ cmd.errPrefix(), @errorName(e) });
+                }
+            }
+            cmd.err_msg_len = 0;
+            if (!cmd.silence_usage) cmd.printUsage(io);
+            return e;
+        }
+        return cmd.execute(io, gpa, found.args);
+    }
+
+    fn findForExec(self: *Command, gpa: std.mem.Allocator, args: []const []const u8) FindResult {
+        if (self.traverse_children) return self.traverse(gpa, args);
+        const found = self.find(gpa, args);
+        if (found.err) |e| {
+            if (e == error.UnknownCommand and !self.disable_suggestions and found.unknown_arg.len > 0) {
+                var msg_cmd = found.cmd;
+                msg_cmd.setErrMsg("unknown command \"{s}\" for \"{s}\"", .{ found.unknown_arg, msg_cmd.commandPath() });
+                _ = msg_cmd.findSuggestions(found.unknown_arg);
+            } else if (found.cmd.err_msg_len == 0) {
+                found.cmd.setErrMsg("{s}", .{@errorName(e)});
+            }
+        }
+        return found;
+    }
+
+    // ─── Default flags ───
+
+    /// Ensures this command owns (or references) a FlagSet (Go parity: Flags() never nil).
+    pub fn ensureFlags(self: *Command, gpa: std.mem.Allocator) *pflag.FlagSet {
+        if (self.flags_ptr) |fs| return fs;
+        if (self.owned_flags == null) {
+            var fs = pflag.FlagSet.init(gpa, self.name());
+            fs.error_handling = .continue_on_error;
+            self.owned_flags = fs;
+        }
+        self.flags_ptr = &self.owned_flags.?;
+        return self.flags_ptr.?;
+    }
+
+    pub fn ensurePersistentFlags(self: *Command, gpa: std.mem.Allocator) *pflag.FlagSet {
+        if (self.pflags) |fs| return fs;
+        if (self.owned_pflags == null) {
+            var fs = pflag.FlagSet.init(gpa, self.name());
+            fs.error_handling = .continue_on_error;
+            self.owned_pflags = fs;
+        }
+        self.pflags = &self.owned_pflags.?;
+        return self.pflags.?;
+    }
+
+    /// Registers --help if not already defined (Go: InitDefaultHelpFlag).
+    pub fn initDefaultHelpFlag(self: *Command, gpa: std.mem.Allocator) void {
+        const fs = self.ensureFlags(gpa);
+        if (fs.lookup(help_flag_name) != null) return;
+        var usage_w = std.Io.Writer.fixed(&self.help_usage_buf);
+        if (self.displayName().len > 0) {
+            usage_w.print("help for {s}", .{self.displayName()}) catch {};
+        } else {
+            usage_w.print("help for this command", .{}) catch {};
+        }
+        const usage_w_end = usage_w.end;
+        const usage = self.help_usage_buf[0..usage_w_end];
+        if (fs.shorthandLookup('h') == null) {
+            fs.boolVarP(&self.help_flag_value, help_flag_name, "h", false, usage) catch {
+                fs.boolVar(&self.help_flag_value, help_flag_name, false, usage) catch {};
+            };
+        } else {
+            fs.boolVar(&self.help_flag_value, help_flag_name, false, usage) catch {};
+        }
+        if (fs.lookup(help_flag_name)) |f| {
+            f.annotations.put(gpa, FlagSetByCobraAnnotation, &.{"true"}) catch {};
+        }
+    }
+
+    /// Registers --version when version is set (Go: InitDefaultVersionFlag).
+    pub fn initDefaultVersionFlag(self: *Command, gpa: std.mem.Allocator) void {
+        if (self.version.len == 0) return;
+        const fs = self.ensureFlags(gpa);
+        if (fs.lookup(version_flag_name) != null) return;
+        var usage_w = std.Io.Writer.fixed(&self.version_usage_buf);
+        if (self.displayName().len > 0) {
+            usage_w.print("version for {s}", .{self.displayName()}) catch {};
+        } else {
+            usage_w.print("version for this command", .{}) catch {};
+        }
+        const usage_w_end = usage_w.end;
+        const usage = self.version_usage_buf[0..usage_w_end];
+        if (fs.shorthandLookup('v') == null) {
+            fs.boolVarP(&self.version_flag_value, version_flag_name, "v", false, usage) catch {
+                fs.boolVar(&self.version_flag_value, version_flag_name, false, usage) catch {};
+            };
+        } else {
+            fs.boolVar(&self.version_flag_value, version_flag_name, false, usage) catch {};
+        }
+    }
+
+    // ─── Default commands ───
+
+    fn trackInternal(self: *Command, gpa: std.mem.Allocator, cmd: *Command) void {
+        self.root().owned_internal_cmds.append(gpa, cmd) catch {};
+    }
+
+    /// Creates the default `help` subcommand (Go: InitDefaultHelpCmd).
+    pub fn initDefaultHelpCmd(self: *Command, gpa: std.mem.Allocator) void {
+        if (!self.hasSubCommands()) return;
+        if (self.help_command == null) {
+            const hc = gpa.create(Command) catch return;
+            hc.* = .{
+                .use = "help [command]",
+                .short = "Help about any command",
+                .run_e = helpCommandRun,
+                .hidden = false,
+            };
+            // `long` needs stable storage — render into the heap-owned command's own buffer.
+            var lw = std.Io.Writer.fixed(&hc.alias_buf);
+            lw.print(
+                "Help provides help for any command in the application.\nSimply type {s} help [path to command] for full details.",
+                .{self.displayName()},
+            ) catch {};
+            hc.long = hc.alias_buf[0..lw.end];
+            if (self.help_command_group_id.len > 0) hc.group_id = self.help_command_group_id;
+            self.help_command = hc;
+            self.trackInternal(gpa, hc);
+        }
+        if (!self.hasHelpCommand()) {
+            self.addCommand(gpa, &.{self.help_command.?});
+        }
+    }
+
+    fn hasHelpCommand(self: *const Command) bool {
+        for (self.commands.items) |c| {
+            if (c == self.help_command) return true;
+        }
+        return false;
+    }
+
+    fn helpCommandRun(cmd: *Command, args: [][]const u8) anyerror!void {
+        const io = exec_state.io orelse return error.NoIoState;
+        const gpa = exec_state.gpa orelse return error.NoGpaState;
+        const r = cmd.root();
+        const found = r.find(gpa, args);
+        if (found.err != null) {
+            var joined: [256]u8 = undefined;
+            var jw = std.Io.Writer.fixed(&joined);
+            for (args, 0..) |a, i| {
+                if (i > 0) jw.print(" ", .{}) catch {};
+                jw.print("{s}", .{a}) catch {};
+            }
+            cmd.print(io, "Unknown help command \"{s}\"\n", .{joined[0..jw.end]});
+            return;
+        }
+        found.cmd.initDefaultHelpFlag(gpa);
+        found.cmd.printHelp(io);
+    }
+
+    /// Creates the default `completion` command with bash/zsh/fish/powershell children
+    /// (Go: InitDefaultCompletionCmd).
+    pub fn initDefaultCompletionCmd(self: *Command, gpa: std.mem.Allocator) void {
+        const opts = self.root().completion_options;
+        if (opts.disable_default_cmd) return;
+        if (!self.hasSubCommands()) return;
+        // Idempotence: don't add twice; respect a user-provided `completion` command.
+        for (self.commands.items) |c| {
+            if (std.mem.eql(u8, c.name(), completions_mod.completion_command_name)) return;
+            if (c.hasAlias(completions_mod.completion_command_name)) return;
+        }
+
+        const have_no_desc_flag = !opts.disable_no_desc_flag and !opts.disable_descriptions;
+
+        const parent = gpa.create(Command) catch return;
+        parent.* = .{
+            .use = completions_mod.completion_command_name,
+            .short = "Generate the autocompletion script for the specified shell",
+            .args_validator = @import("args.zig").noArgs(),
+            .hidden = opts.hidden_default_cmd,
+            .valid_args_function = completions_mod.noFileCompletions(),
+        };
+        parent.long =
+            \\Generate the autocompletion script for this application, to load it into your shell.
+            \\See each sub-command's help for details on how to use the generated script.
+        ;
+        if (self.completion_command_group_id.len > 0) parent.group_id = self.completion_command_group_id;
+        self.trackInternal(gpa, parent);
+
+        const defs = [_]struct { use: []const u8, short: []const u8, f: RunFunc, no_desc_flag: bool }{
+            .{ .use = "bash", .short = "Generate the autocompletion script for bash", .f = completionBashRun, .no_desc_flag = true },
+            .{ .use = "zsh", .short = "Generate the autocompletion script for zsh", .f = completionZshRun, .no_desc_flag = true },
+            .{ .use = "fish", .short = "Generate the autocompletion script for fish", .f = completionFishRun, .no_desc_flag = true },
+            .{ .use = "powershell", .short = "Generate the autocompletion script for powershell", .f = completionPowerShellRun, .no_desc_flag = true },
+        };
+        for (defs) |d| {
+            const c = gpa.create(Command) catch return;
+            c.* = .{
+                .use = d.use,
+                .short = d.short,
+                .run = d.f,
+                .args_validator = @import("args.zig").noArgs(),
+                .valid_args_function = completions_mod.noFileCompletions(),
+            };
+            if (have_no_desc_flag and d.no_desc_flag) {
+                const fs = c.ensureFlags(gpa);
+                fs.boolVar(&c.internal_flag_bool, completions_mod.comp_cmd_no_desc_flag_name, completions_mod.comp_cmd_no_desc_flag_default, completions_mod.comp_cmd_no_desc_flag_desc) catch {};
+            }
+            parent.addCommand(gpa, &.{c});
+            self.trackInternal(gpa, c);
+        }
+        self.addCommand(gpa, &.{parent});
+    }
+
+    /// Effective include-descriptions for a completion subcommand run.
+    fn completionIncludeDesc(cmd: *Command) bool {
+        return !cmd.internal_flag_bool and !cmd.root().completion_options.disable_descriptions;
+    }
+
+    fn completionBashRun(cmd: *Command, args: [][]const u8) void {
+        _ = args;
+        const io = exec_state.io orelse return;
+        const w = cmd.outOrStdout(io);
+        completions_mod.genBashCompletionV2(cmd.root(), w, completionIncludeDesc(cmd)) catch {};
+        w.flush() catch {};
+    }
+    fn completionZshRun(cmd: *Command, args: [][]const u8) void {
+        _ = args;
+        const io = exec_state.io orelse return;
+        const w = cmd.outOrStdout(io);
+        completions_mod.genZshCompletion(cmd.root(), w, completionIncludeDesc(cmd)) catch {};
+        w.flush() catch {};
+    }
+    fn completionFishRun(cmd: *Command, args: [][]const u8) void {
+        _ = args;
+        const io = exec_state.io orelse return;
+        const w = cmd.outOrStdout(io);
+        completions_mod.genFishCompletion(cmd.root(), w, completionIncludeDesc(cmd)) catch {};
+        w.flush() catch {};
+    }
+    fn completionPowerShellRun(cmd: *Command, args: [][]const u8) void {
+        _ = args;
+        const io = exec_state.io orelse return;
+        const w = cmd.outOrStdout(io);
+        completions_mod.genPowerShellCompletion(cmd.root(), w, completionIncludeDesc(cmd)) catch {};
+        w.flush() catch {};
+    }
+
+    /// Creates the hidden __complete machinery (Go: initCompleteCmd).
+    /// __completeNoDesc is an ALIAS (Go parity); the run distinguishes via calledAs().
+    pub fn initCompleteCmd(self: *Command, gpa: std.mem.Allocator) void {
+        if (!self.hasSubCommands()) return;
+        for (self.commands.items) |c| {
+            if (std.mem.eql(u8, c.name(), completions_mod.shell_comp_request_cmd)) return;
+        }
+        const complete = gpa.create(Command) catch return;
+        complete.* = .{
+            .use = completions_mod.shell_comp_request_cmd,
+            .aliases = &.{completions_mod.shell_comp_no_desc_request_cmd},
+            .short = "Request shell completion choices for the specified command-line",
+            .long = completions_mod.shell_comp_request_cmd ++
+                " is a special command used by the shell completion logic to request completion choices.",
+            .hidden = true,
+            .disable_flag_parsing = true,
+            .args_validator = @import("args.zig").minimumNArgs(1),
+            .run_e = completeCmdRun,
+        };
+        self.trackInternal(gpa, complete);
+        self.addCommand(gpa, &.{complete});
+    }
+
+    fn completeCmdRun(cmd: *Command, args: [][]const u8) anyerror!void {
+        const with_desc = !std.mem.eql(u8, cmd.calledAs(), completions_mod.shell_comp_no_desc_request_cmd);
+        try runCompletionRequest(cmd, args, with_desc);
+    }
+    fn runCompletionRequest(cmd: *Command, args: [][]const u8, with_desc: bool) anyerror!void {
+        const io = exec_state.io orelse return error.NoIoState;
+        const gpa = exec_state.gpa orelse return error.NoGpaState;
+        try completions_mod.getCompletions(cmd.root(), io, gpa, args, with_desc);
+    }
+
+    /// Validates that every child command's group_id is a registered group (Go panics on misuse).
+    pub fn checkCommandGroups(self: *const Command) void {
+        for (self.commands.items) |sub| {
+            const considered = sub.isAvailableCommand() or sub == self.help_command;
+            if (!considered) continue;
+            sub.checkCommandGroups();
+            if (sub.group_id.len > 0 and !self.containsGroup(sub.group_id)) {
+                @panic("cobra: group id of command is not defined");
+            }
+        }
+    }
+
+    pub fn isFlagArg(arg: []const u8) bool {
+        return (arg.len >= 3 and std.mem.eql(u8, arg[0..2], "--")) or
+            (arg.len >= 2 and arg[0] == '-' and arg[1] != '-');
+    }
+
+    // ─── Flag accessors ───
+
+    /// Returns this command's own FlagSet, lazily creating an owned one (Go: Flags()).
+    pub fn flags(self: *Command, gpa: std.mem.Allocator) *pflag.FlagSet {
+        return self.ensureFlags(gpa);
+    }
+    /// Raw accessor without lazy creation (may be null).
+    pub fn flagsPtr(self: *const Command) ?*pflag.FlagSet {
+        return self.flags_ptr;
+    }
+
+    /// Returns this command's persistent FlagSet, lazily creating an owned one.
+    pub fn persistentFlags(self: *Command, gpa: std.mem.Allocator) *pflag.FlagSet {
+        return self.ensurePersistentFlags(gpa);
+    }
+    pub fn persistentFlagsPtr(self: *const Command) ?*pflag.FlagSet {
+        return self.pflags;
+    }
+
+    /// Builds the borrowed parents_pflags view (union of ancestors' persistent flags).
+    /// When `rebuild` is true the view is refreshed (flags may have been added since).
+    pub fn updateParentsPflags(self: *Command, gpa: std.mem.Allocator, rebuild: bool) void {
+        if (self.parents_pflags != null and !rebuild) return;
+        if (!self.hasParent()) {
+            self.parents_pflags = null;
+            return;
+        }
+        if (self.parents_pflags_storage == null) {
+            var fs = pflag.FlagSet.init(gpa, "parents");
+            fs.error_handling = .continue_on_error;
+            self.parents_pflags_storage = fs;
+        }
+        const view = &self.parents_pflags_storage.?;
+        clearBorrowed(&self.parents_pflags_storage);
+        var p: ?*Command = self.parent;
+        // Farthest ancestor first so nearest flags win name conflicts.
+        var chain: [32]*Command = undefined;
+        var n: usize = 0;
+        while (p) |cur| {
+            if (n >= chain.len) break;
+            chain[n] = cur;
+            n += 1;
+            p = cur.parent;
+        }
+        while (n > 0) {
+            n -= 1;
+            if (chain[n].pflags) |pf| addBorrowedFlags(view, pf);
+        }
+        self.parents_pflags = view;
+    }
+
+    /// Builds local/inherited views and ensures flags exist (Go: MergePersistentFlags()).
+    /// Views hold borrowed flag pointers and are rebuilt on every call so that flags
+    /// registered later (e.g. the implicit --help) are always reflected.
+    pub fn mergePersistentFlags(self: *Command, gpa: std.mem.Allocator) void {
+        _ = self.ensureFlags(gpa);
+        self.updateParentsPflags(gpa, true);
+
+        // Local flags = own flags + own persistent, minus inherited (Go: LocalFlags).
+        if (self.lflags_storage == null) {
+            var fs = pflag.FlagSet.init(gpa, "local");
+            fs.error_handling = .continue_on_error;
+            self.lflags_storage = fs;
+        }
+        {
+            const view = &self.lflags_storage.?;
+            clearBorrowed(&self.lflags_storage);
+            if (self.flags_ptr) |f| addBorrowedFlags(view, f);
+            if (self.pflags) |pf| addBorrowedFlags(view, pf);
+            if (self.parents_pflags) |pp| removeFlagsPresent(view, pp);
+            self.lflags = view;
+        }
+
+        // Inherited = ancestors' persistent flags (null when there is no parent chain).
+        if (self.parents_pflags) |pp| {
+            if (self.iflags_storage == null) {
+                var fs = pflag.FlagSet.init(gpa, "inherited");
+                fs.error_handling = .continue_on_error;
+                self.iflags_storage = fs;
+            }
+            const view = &self.iflags_storage.?;
+            clearBorrowed(&self.iflags_storage);
+            addBorrowedFlags(view, pp);
+            self.iflags = view;
+        } else {
+            self.iflags = null;
+        }
+
+        // Local non-persistent = own flags minus own persistent (Go: LocalNonPersistentFlags).
+        if (self.lnpflags_storage == null) {
+            var fs = pflag.FlagSet.init(gpa, "localNonPersistent");
+            fs.error_handling = .continue_on_error;
+            self.lnpflags_storage = fs;
+        }
+        {
+            const view = &self.lnpflags_storage.?;
+            clearBorrowed(&self.lnpflags_storage);
+            if (self.flags_ptr) |f| addBorrowedFlags(view, f);
+            if (self.pflags) |pf| removeFlagsPresent(view, pf);
+            self.lnpflags = view;
+        }
+    }
+
+    /// Local flags view (own + own persistent). Requires mergePersistentFlags first.
+    pub fn localFlagsView(self: *const Command) ?*pflag.FlagSet {
+        return self.lflags;
+    }
+    /// Inherited flags view. Requires mergePersistentFlags first.
+    pub fn inheritedFlagsView(self: *const Command) ?*pflag.FlagSet {
+        return self.iflags;
+    }
+
+    pub fn localFlags(self: *Command, gpa: std.mem.Allocator) ?*pflag.FlagSet {
+        self.mergePersistentFlags(gpa);
+        return self.lflags;
+    }
+    pub fn inheritedFlags(self: *Command, gpa: std.mem.Allocator) ?*pflag.FlagSet {
+        self.mergePersistentFlags(gpa);
+        return self.iflags;
+    }
+    pub fn parentsPflags(self: *Command, gpa: std.mem.Allocator) ?*pflag.FlagSet {
+        self.updateParentsPflags(gpa, false);
+        return self.parents_pflags;
+    }
+    pub fn nonInheritedFlags(self: *Command, gpa: std.mem.Allocator) ?*pflag.FlagSet {
+        return self.localFlags(gpa);
+    }
+    pub fn localNonPersistentFlags(self: *Command, gpa: std.mem.Allocator) ?*pflag.FlagSet {
+        self.mergePersistentFlags(gpa);
+        return self.lnpflags;
+    }
+
+    /// Lookup a flag by name across this command and its ancestors (Go: Flag()).
+    pub fn flag(self: *const Command, flag_name: []const u8) ?*pflag.Flag {
+        if (self.flags_ptr) |fs| {
+            if (fs.lookup(flag_name)) |f| return f;
+        }
+        if (self.pflags) |pf| {
+            if (pf.lookup(flag_name)) |f| return f;
+        }
+        if (self.parent) |p| return p.flag(flag_name);
+        return null;
+    }
+
+    // ─── Flag queries ───
+
+    fn setHasAvailableFlags(fs: ?*pflag.FlagSet) bool {
+        const f = fs orelse return false;
+        for (f.ordered_formal.items) |fl| {
+            if (!fl.hidden) return true;
+        }
+        return false;
+    }
+
+    pub fn hasFlags(self: *const Command) bool {
+        if (self.flags_ptr != null or self.pflags != null) return true;
+        return self.hasInheritedFlags();
+    }
+    pub fn hasLocalFlags(self: *const Command) bool {
+        return setHasAvailableFlags(self.flags_ptr) or setHasAvailableFlags(self.pflags);
+    }
+    pub fn hasInheritedFlags(self: *const Command) bool {
+        var p: ?*const Command = self.parent;
+        while (p) |cur| : (p = cur.parent) {
+            if (setHasAvailableFlags(cur.pflags)) return true;
+        }
+        return false;
+    }
+    pub fn hasPersistentFlags(self: *const Command) bool {
+        return setHasAvailableFlags(self.pflags);
+    }
+    pub fn hasAvailableFlags(self: *const Command) bool {
+        return setHasAvailableFlags(self.flags_ptr) or self.hasAvailablePersistentFlags() or self.hasAvailableInheritedFlags();
+    }
+    pub fn hasAvailableLocalFlags(self: *const Command) bool {
+        return setHasAvailableFlags(self.lflags) or setHasAvailableFlags(self.flags_ptr) or setHasAvailableFlags(self.pflags);
+    }
+    pub fn hasAvailableInheritedFlags(self: *const Command) bool {
+        return setHasAvailableFlags(self.iflags) or self.hasInheritedFlags();
+    }
+    pub fn hasAvailablePersistentFlags(self: *const Command) bool {
+        return setHasAvailableFlags(self.pflags);
+    }
+
+    // ─── Required flags & flag groups (Go: ValidateRequiredFlags / ValidateFlagGroups) ───
+
+    const RequiredCtx = struct {
+        names: *[32][]const u8,
+        count: *usize,
+    };
+
+    /// Validates that all flags annotated as required were set. Stages a Go-parity message
+    /// in err_msg_buf and returns error.RequiredFlagsMissing on failure.
+    pub fn validateRequiredFlags(self: *const Command) anyerror!void {
+        if (self.disable_flag_parsing) return;
+        const fs = self.flags_ptr orelse return;
+        var names: [32][]const u8 = undefined;
+        var count: usize = 0;
+        const ctx = RequiredCtx{ .names = &names, .count = &count };
+        fs.visitAll(ctx, struct {
+            fn cb(c: RequiredCtx, f: *pflag.Flag) void {
+                const ann = f.annotations.get(bash_comp_one_required_flag) orelse return;
+                if (ann.len == 0) return;
+                if (!std.mem.eql(u8, ann[0], "true")) return;
+                if (f.changed) return;
+                if (c.count.* >= c.names.len) return;
+                c.names[c.count.*] = f.name;
+                c.count.* += 1;
+            }
+        }.cb);
+        if (count == 0) return;
+
+        const this = @constCast(self);
+        var w = std.Io.Writer.fixed(&this.err_msg_buf);
+        w.print("required flag(s) ", .{}) catch {};
+        for (names[0..count], 0..) |n, i| {
+            if (i + 1 == count) {
+                w.print("\"{s}\"", .{n}) catch {};
+            } else {
+                w.print("\"{s}\", ", .{n}) catch {};
+            }
+        }
+        w.print(" not set", .{}) catch {};
+        this.err_msg_len = w.end;
+        return error.RequiredFlagsMissing;
+    }
+
+    /// Flag group annotation keys (Go: flag_groups.go).
+    pub const required_as_group_annotation = "cobra_annotation_required_if_others_set";
+    pub const one_required_annotation = "cobra_annotation_one_required";
+    pub const mutually_exclusive_annotation = "cobra_annotation_mutually_exclusive";
+
+    /// Finds the FlagSet (own, persistent, or ancestor) owning `flag_name`.
+    pub fn owningFlagSet(self: *Command, flag_name: []const u8) ?*pflag.FlagSet {
+        if (self.flags_ptr) |fs| {
+            if (fs.lookup(flag_name) != null) return fs;
+        }
+        if (self.pflags) |pf| {
+            if (pf.lookup(flag_name) != null) return pf;
+        }
+        if (self.parent) |p| return p.owningFlagSet(flag_name);
+        return null;
+    }
+
+    /// Validates flag groups (Go: ValidateFlagGroups). Groups are stored as flag
+    /// annotations; messages and ordering match Go exactly.
+    pub fn validateFlagGroups(self: *const Command) anyerror!void {
+        if (self.disable_flag_parsing) return;
+        const this = @constCast(self);
+        const local = this.lflags orelse this.flags_ptr orelse return;
+        if (this.validateFlagGroupKind(local, this.iflags, required_as_group_annotation, .required_together)) return error.FlagGroupViolation;
+        if (this.validateFlagGroupKind(local, this.iflags, one_required_annotation, .one_required)) return error.FlagGroupViolation;
+        if (this.validateFlagGroupKind(local, this.iflags, mutually_exclusive_annotation, .mutually_exclusive)) return error.FlagGroupViolation;
+    }
+
+    const GroupKind = enum { required_together, one_required, mutually_exclusive };
+
+    fn lookupAcross(a: ?*pflag.FlagSet, b: ?*pflag.FlagSet, n: []const u8) ?*pflag.Flag {
+        if (a) |s| {
+            if (s.lookup(n)) |f| return f;
+        }
+        if (b) |s| {
+            if (s.lookup(n)) |f| return f;
+        }
+        return null;
+    }
+
+    fn lessThanString(_: void, a: []const u8, b: []const u8) bool {
+        return std.mem.order(u8, a, b) == .lt;
+    }
+
+    /// Splits a space-joined group key into names. Returns count, or null if it overflows.
+    fn splitGroupKey(key: []const u8, out: *[16][]const u8) ?usize {
+        var n: usize = 0;
+        var it = std.mem.splitScalar(u8, key, ' ');
+        while (it.next()) |part| {
+            if (part.len == 0) continue;
+            if (n >= out.len) return null;
+            out[n] = part;
+            n += 1;
+        }
+        return n;
+    }
+
+    /// Returns true when a violation was found (message staged in err_msg_buf).
+    fn validateFlagGroupKind(self: *Command, local: *pflag.FlagSet, inherited: ?*pflag.FlagSet, annotation: []const u8, kind: GroupKind) bool {
+        var keys: [32][]const u8 = undefined;
+        var n_keys: usize = 0;
+        const scan = struct {
+            fn inner(fs: ?*pflag.FlagSet, ann: []const u8, keys_arr: *[32][]const u8, count: *usize) void {
+                const s = fs orelse return;
+                for (s.ordered_formal.items) |f| {
+                    const group_list = f.annotations.get(ann) orelse continue;
+                    for (group_list) |g| {
+                        var dup = false;
+                        for (keys_arr[0..count.*]) |k| {
+                            if (std.mem.eql(u8, k, g)) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup and count.* < keys_arr.len) {
+                            keys_arr[count.*] = g;
+                            count.* += 1;
+                        }
+                    }
+                }
+            }
+        }.inner;
+        scan(local, annotation, &keys, &n_keys);
+        scan(inherited, annotation, &keys, &n_keys);
+        if (n_keys > 1) std.mem.sort([]const u8, keys[0..n_keys], {}, lessThanString);
+
+        for (keys[0..n_keys]) |group_key| {
+            var names: [16][]const u8 = undefined;
+            const n_names = splitGroupKey(group_key, &names) orelse continue;
+            if (n_names == 0) continue;
+
+            var all_present = true;
+            for (names[0..n_names]) |n| {
+                if (lookupAcross(local, inherited, n) == null) {
+                    all_present = false;
                     break;
                 }
             }
+            if (!all_present) continue;
 
-            if (found) |next| {
+            var set: [16][]const u8 = undefined;
+            var n_set: usize = 0;
+            var unset: [16][]const u8 = undefined;
+            var n_unset: usize = 0;
+            for (names[0..n_names]) |n| {
+                const f = lookupAcross(local, inherited, n).?;
+                if (f.changed) {
+                    if (n_set < set.len) {
+                        set[n_set] = n;
+                        n_set += 1;
+                    }
+                } else {
+                    if (n_unset < unset.len) {
+                        unset[n_unset] = n;
+                        n_unset += 1;
+                    }
+                }
+            }
+
+            switch (kind) {
+                .required_together => {
+                    if (n_set > 0 and n_unset > 0) {
+                        if (n_unset > 1) std.mem.sort([]const u8, unset[0..n_unset], {}, lessThanString);
+                        var w = std.Io.Writer.fixed(&self.err_msg_buf);
+                        w.print("if any flags in the group [{s}] are set they must all be set; missing [", .{group_key}) catch {};
+                        for (unset[0..n_unset], 0..) |u, i| {
+                            if (i > 0) w.print(" ", .{}) catch {};
+                            w.print("{s}", .{u}) catch {};
+                        }
+                        w.print("]", .{}) catch {};
+                        self.err_msg_len = w.end;
+                        return true;
+                    }
+                },
+                .one_required => {
+                    if (n_set == 0) {
+                        var w = std.Io.Writer.fixed(&self.err_msg_buf);
+                        w.print("at least one of the flags in the group [{s}] is required", .{group_key}) catch {};
+                        self.err_msg_len = w.end;
+                        return true;
+                    }
+                },
+                .mutually_exclusive => {
+                    if (n_set > 1) {
+                        if (n_set > 1) std.mem.sort([]const u8, set[0..n_set], {}, lessThanString);
+                        var w = std.Io.Writer.fixed(&self.err_msg_buf);
+                        w.print("if any flags in the group [{s}] are set none of the others can be; [", .{group_key}) catch {};
+                        for (set[0..n_set], 0..) |s, i| {
+                            if (i > 0) w.print(" ", .{}) catch {};
+                            w.print("{s}", .{s}) catch {};
+                        }
+                        w.print("] were all set", .{}) catch {};
+                        self.err_msg_len = w.end;
+                        return true;
+                    }
+                },
+            }
+        }
+        return false;
+    }
+
+    /// Go parity: adjusts required/hidden flag state so completion proposals
+    /// respect flag groups. Called during __complete handling only.
+    pub fn enforceFlagGroupsForCompletion(self: *const Command) void {
+        if (self.disable_flag_parsing) return;
+        const this = @constCast(self);
+        const local = this.lflags orelse this.flags_ptr orelse return;
+
+        const enforceKind = struct {
+            fn inner(local_set: *pflag.FlagSet, inherited: ?*pflag.FlagSet, ann: []const u8, mode: u8) void {
+                var keys: [32][]const u8 = undefined;
+                var n_keys: usize = 0;
+                const scanSets = [_]?*pflag.FlagSet{ local_set, inherited };
+                for (scanSets) |maybe| {
+                    const s = maybe orelse continue;
+                    for (s.ordered_formal.items) |f| {
+                        const group_list = f.annotations.get(ann) orelse continue;
+                        for (group_list) |g| {
+                            var dup = false;
+                            for (keys[0..n_keys]) |k| {
+                                if (std.mem.eql(u8, k, g)) {
+                                    dup = true;
+                                    break;
+                                }
+                            }
+                            if (!dup and n_keys < keys.len) {
+                                keys[n_keys] = g;
+                                n_keys += 1;
+                            }
+                        }
+                    }
+                }
+                for (keys[0..n_keys]) |group_key| {
+                    var names: [16][]const u8 = undefined;
+                    const n_names = splitGroupKey(group_key, &names) orelse continue;
+                    var n_set: usize = 0;
+                    for (names[0..n_names]) |n| {
+                        const f = lookupAcross(local_set, inherited, n) orelse continue;
+                        if (f.changed) n_set += 1;
+                    }
+                    switch (mode) {
+                        // required-together: any set -> all become required
+                        // one-required: none set -> all become required
+                        0, 1 => {
+                            const act = (mode == 0 and n_set > 0) or (mode == 1 and n_set == 0);
+                            if (act) {
+                                for (names[0..n_names]) |n| {
+                                    if (lookupAcross(local_set, inherited, n)) |f| {
+                                        f.annotations.put(local_set.gpa, bash_comp_one_required_flag, &.{"true"}) catch {};
+                                    }
+                                }
+                            }
+                        },
+                        // mutually exclusive: any set -> hide the others
+                        else => {
+                            if (n_set > 0) {
+                                for (names[0..n_names]) |n| {
+                                    const f = lookupAcross(local_set, inherited, n) orelse continue;
+                                    if (!f.changed) f.hidden = true;
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+        }.inner;
+
+        enforceKind(local, this.iflags, required_as_group_annotation, 0);
+        enforceKind(local, this.iflags, one_required_annotation, 1);
+        enforceKind(local, this.iflags, mutually_exclusive_annotation, 2);
+    }
+
+    // ─── Parsing ───
+
+    /// Parses args with inherited persistent flags temporarily merged in (borrowed).
+    pub fn parseArgs(self: *Command, a: []const []const u8) anyerror!void {
+        const fs = self.flags_ptr orelse return;
+        fs.error_handling = .continue_on_error;
+        fs.parse_errors_allowlist.unknown_flags =
+            self.fparse_err_whitelist.unknown_flag or self.fparse_err_whitelist.unknown_shorthand_flag;
+
+        // Temporarily borrow own-persistent + ancestor-persistent flags into fs.
+        var borrowed: [128]*pflag.Flag = undefined;
+        var n_borrowed: usize = 0;
+        const start_formal = fs.ordered_formal.items.len;
+
+        const borrowFrom = struct {
+            fn inner(dst: *pflag.FlagSet, src: ?*pflag.FlagSet, list: *[128]*pflag.Flag, count: *usize, base: usize) void {
+                const s = src orelse return;
+                for (s.ordered_formal.items) |f| {
+                    if (dst.lookup(f.name) != null) continue;
+                    if (f.shorthand.len > 0) {
+                        if (dst.shorthandLookup(f.shorthand[0]) != null) continue;
+                    }
+                    dst.addFlag(f) catch continue;
+                    if (count.* >= list.len) continue;
+                    // Only track flags added beyond the command's own set for later removal.
+                    list[count.*] = f;
+                    count.* += 1;
+                }
+                _ = base;
+            }
+        }.inner;
+        borrowFrom(fs, self.pflags, &borrowed, &n_borrowed, start_formal);
+        // Ancestors' persistent flags
+        var p: ?*Command = self.parent;
+        while (p) |cur| : (p = cur.parent) {
+            borrowFrom(fs, cur.pflags, &borrowed, &n_borrowed, start_formal);
+        }
+        defer removeBorrowedFlags(fs, borrowed[0..n_borrowed], start_formal);
+
+        return fs.parse(a);
+    }
+
+    /// Public parse entry point (Go: ParseFlags()).
+    pub fn parseFlags(self: *Command, io: std.Io, gpa: std.mem.Allocator, a: []const []const u8) anyerror!void {
+        _ = io;
+        if (self.disable_flag_parsing) {
+            self.args_slice = a;
+            return;
+        }
+        self.mergePersistentFlags(gpa);
+        return self.parseArgs(a);
+    }
+
+    // ─── Command resolution (Go: Find/Traverse) ───
+
+    pub const FindResult = struct {
+        cmd: *Command,
+        args: []const []const u8,
+        err: ?anyerror = null,
+        /// First unrecognized positional arg (for error messages/suggestions)
+        unknown_arg: []const u8 = "",
+    };
+
+    /// Strips flags (honoring value-consuming flags) and returns positional args only.
+    /// Mirrors Go's stripFlags.
+    fn stripFlags(self: *Command, args: []const []const u8, out: *std.ArrayListUnmanaged([]const u8), gpa: std.mem.Allocator) void {
+        const fs = self.flags_ptr;
+        var i: usize = 0;
+        while (i < args.len) {
+            const s = args[i];
+            i += 1;
+            if (std.mem.eql(u8, s, "--")) break;
+            if (std.mem.startsWith(u8, s, "--")) {
+                if (std.mem.indexOfScalar(u8, s, '=') != null) continue;
+                const fname = s[2..];
+                const takes_value = if (fs) |f| flagTakesValue(f.lookup(fname)) else false;
+                if (takes_value) {
+                    if (i >= args.len) break;
+                    i += 1; // consume value
+                }
+                continue;
+            }
+            if (s.len >= 2 and s[0] == '-' and s[1] != '-') {
+                if (std.mem.indexOfScalar(u8, s, '=') != null) continue;
+                if (s.len == 2) {
+                    const takes_value = if (fs) |f| flagTakesValue(f.shorthandLookup(s[1])) else false;
+                    if (takes_value) {
+                        if (i >= args.len) break;
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            if (s.len > 0) {
+                out.append(gpa, s) catch {};
+            }
+        }
+    }
+
+    fn flagTakesValue(f: ?*pflag.Flag) bool {
+        const fl = f orelse return false; // Unknown flag: Go assumes it takes no value.
+        return fl.no_opt_def_val.len == 0;
+    }
+
+    /// Resolves the target command and remaining args (Go: Find()).
+    /// Returns err=error.UnknownCommand when legacyArgs rejects trailing positional args.
+    pub fn find(self: *Command, gpa: std.mem.Allocator, args: []const []const u8) FindResult {
+        // stripFlags must see inherited persistent flags to know which consume values.
+        _ = self.ensureFlags(gpa);
+        self.mergePersistentFlags(gpa);
+        var cmd: *Command = self;
+        var remaining: []const []const u8 = args;
+
+        var positional: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer positional.deinit(gpa);
+
+        while (true) {
+            positional.clearRetainingCapacity();
+            cmd.stripFlags(remaining, &positional, gpa);
+            if (positional.items.len == 0) break;
+            const next_name = positional.items[0];
+            const next = cmd.findNext(next_name) orelse break;
+            remaining = argsMinusFirstX(gpa, remaining, next_name) orelse break;
+            cmd = next;
+        }
+
+        // Go parity: legacyArgs check only when the found command has no custom validator.
+        if (cmd.args_validator == null) {
+            positional.clearRetainingCapacity();
+            cmd.stripFlags(remaining, &positional, gpa);
+            if (cmd.hasSubCommands() and !cmd.hasParent() and positional.items.len > 0) {
+                return .{ .cmd = cmd, .args = remaining, .err = error.UnknownCommand, .unknown_arg = positional.items[0] };
+            }
+        }
+        return .{ .cmd = cmd, .args = remaining, .err = null };
+    }
+
+    pub fn findNext(self: *Command, next_name: []const u8) ?*Command {
+        const name_matches = @import("cobra.zig").commandNameMatches;
+        for (self.commands.items) |c| {
+            if (name_matches(c.name(), next_name) or c.hasAlias(next_name)) {
+                c.command_called_as = .{ .name = next_name, .called = true };
+                return c;
+            }
+        }
+        if (@import("cobra.zig").enable_prefix_matching) {
+            var matches: [2]*Command = undefined;
+            var n: usize = 0;
+            for (self.commands.items) |c| {
+                if (c.hidden or c.deprecated.len > 0) continue;
+                if (c.hasNameOrAliasPrefix(next_name)) {
+                    if (n >= 2) {
+                        n += 1;
+                        break;
+                    }
+                    matches[n] = c;
+                    n += 1;
+                }
+            }
+            if (n == 1) {
+                matches[0].command_called_as = .{ .name = next_name, .called = true };
+                return matches[0];
+            }
+        }
+        return null;
+    }
+
+    /// Traverses the command tree parsing flags at every level (Go: Traverse()).
+    /// Unlike find(), flags may appear between subcommand names.
+    pub fn traverse(self: *Command, gpa: std.mem.Allocator, args: []const []const u8) FindResult {
+        var cmd: *Command = self;
+        var remaining = args;
+        while (remaining.len > 0) {
+            const s = remaining[0];
+            if (std.mem.eql(u8, s, "--")) break;
+            if (!std.mem.startsWith(u8, s, "-") and s.len > 0) {
+                const next = cmd.findNext(s) orelse {
+                    return .{ .cmd = cmd, .args = remaining, .err = error.UnknownCommand, .unknown_arg = s };
+                };
                 cmd = next;
                 remaining = remaining[1..];
-            } else {
-                break;
+                continue;
+            }
+            // Flag token: consume it plus its value if the flag requires one at this level.
+            const fs = cmd.flags_ptr;
+            var skip: usize = 1;
+            if (std.mem.startsWith(u8, s, "--")) {
+                if (std.mem.indexOfScalar(u8, s, '=') == null) {
+                    const fname = s[2..];
+                    if (fs) |f| {
+                        if (flagTakesValue(f.lookup(fname))) skip = 2;
+                    }
+                }
+            } else if (s.len == 2) {
+                if (fs) |f| {
+                    if (flagTakesValue(f.shorthandLookup(s[1]))) skip = 2;
+                }
+            }
+            if (skip > remaining.len) break;
+            remaining = remaining[skip..];
+        }
+        _ = gpa;
+        return .{ .cmd = cmd, .args = remaining, .err = null };
+    }
+
+    /// Number of CLI args before the '--' separator, or -1 if absent (Go: ArgsLenAtDash()).
+    pub fn argsLenAtDash(self: *const Command) isize {
+        if (self.flags_ptr) |fs| return fs.args_len_at_dash;
+        return -1;
+    }
+
+    // ─── Utility ───
+
+    /// "name, alias1, alias2" rendered into an internal buffer (Go: NameAndAliases()).
+    pub fn nameAndAliases(self: *Command) []const u8 {
+        var w = std.Io.Writer.fixed(&self.alias_buf);
+        w.print("{s}", .{self.name()}) catch {};
+        for (self.aliases) |a| {
+            w.print(", {s}", .{a}) catch {};
+        }
+        return self.alias_buf[0..w.end];
+    }
+
+    /// Parent path + use line (Go: UseLine()). Rendered into an internal buffer.
+    pub fn useLine(self: *Command) []const u8 {
+        var w = std.Io.Writer.fixed(&self.use_line_buf);
+        if (self.parent) |p| {
+            w.print("{s} ", .{p.commandPath()}) catch {};
+        }
+        const use = self.use;
+        w.print("{s}", .{use}) catch {};
+        if (!self.disable_flags_in_use_line) {
+            // Go appends " [flags]" when the command has available flags and use doesn't already end with it.
+            if (self.hasAvailableFlags() and !std.mem.endsWith(u8, use, "[flags]")) {
+                w.print(" [flags]", .{}) catch {};
+            }
+        }
+        return self.use_line_buf[0..w.end];
+    }
+
+    pub fn resetFlags(self: *Command) void {
+        self.flags_ptr = null;
+        self.pflags = null;
+        self.lflags = null;
+        self.iflags = null;
+        self.parents_pflags = null;
+        self.lnpflags = null;
+        self.help_flag_value = false;
+        self.version_flag_value = false;
+    }
+
+    pub fn hasNameOrAliasPrefix(self: *const Command, prefix: []const u8) bool {
+        if (prefix.len == 0) return false;
+        if (std.mem.startsWith(u8, self.name(), prefix)) return true;
+        for (self.aliases) |a| {
+            if (std.mem.startsWith(u8, a, prefix)) return true;
+        }
+        return false;
+    }
+
+    /// Registers a completion function for a flag's values (Go: RegisterFlagCompletionFunc).
+    pub fn registerFlagCompletionFunc(self: *Command, gpa: std.mem.Allocator, flag_name: []const u8, f: CompletionFuncType) anyerror!void {
+        if (self.flag(flag_name) == null) return error.NoSuchFlag;
+        if (self.flag_completions.contains(flag_name)) return error.FlagCompletionAlreadyRegistered;
+        try self.flag_completions.put(gpa, flag_name, f);
+    }
+
+    /// Looks up a registered flag completion function.
+    pub fn getFlagCompletionFunc(self: *const Command, flag_name: []const u8) ?CompletionFuncType {
+        return self.flag_completions.get(flag_name);
+    }
+
+    // ─── Flag group marking (Go: MarkFlags*) ───
+
+    /// Adds the group annotation to every flag of the group. The group key is the
+    /// space-joined flag names, stored with stable (library-owned) allocation.
+    fn markFlagGroupAnnotation(self: *Command, gpa: std.mem.Allocator, flag_names: []const []const u8, annotation: []const u8) anyerror!void {
+        if (flag_names.len < 2) return; // groups of size < 2 have no observable effect
+
+        // Go parity: unknown flags abort the whole mark (Go panics; we return an error).
+        for (flag_names) |n| {
+            if (self.owningFlagSet(n) == null) {
+                self.setErrMsg("Failed to find flag \"{s}\" and mark it as being in a flag group", .{n});
+                return error.NoSuchFlag;
             }
         }
 
-        // 用剩余参数执行找到的命令
-        return cmd.execute(io, remaining);
+        var key_buf: [512]u8 = undefined;
+        var kw = std.Io.Writer.fixed(&key_buf);
+        for (flag_names, 0..) |n, i| {
+            if (i > 0) kw.print(" ", .{}) catch {};
+            kw.print("{s}", .{n}) catch {};
+        }
+        const key = try gpa.dupe(u8, key_buf[0..kw.end]);
+
+        for (flag_names) |n| {
+            const fs = self.owningFlagSet(n) orelse {
+                self.setErrMsg("Failed to find flag \"{s}\" and mark it as being in a flag group", .{n});
+                return error.NoSuchFlag;
+            };
+            const existing: []const []const u8 = if (fs.lookup(n)) |f|
+                (f.annotations.get(annotation) orelse &.{})
+            else
+                &.{};
+            const vals = try gpa.alloc([]const u8, existing.len + 1);
+            @memcpy(vals[0..existing.len], existing);
+            vals[existing.len] = key;
+            fs.setAnnotation(n, annotation, vals) catch return error.NoSuchFlag;
+            self.owned_annotation_values.append(gpa, vals) catch {};
+        }
+        self.owned_group_keys.append(gpa, key) catch {};
     }
 
-    pub fn initDefaultHelpFlag(self: *Command) void {
-        // Lazy init: if no flags set, check parent
-        if (self.flags_ptr == null and self.parent != null) {
-            self.flags_ptr = self.parent.?.flags_ptr;
-        }
+    pub fn markFlagsMutuallyExclusive(self: *Command, gpa: std.mem.Allocator, flag_names: []const []const u8) anyerror!void {
+        self.mergePersistentFlags(gpa);
+        try self.markFlagGroupAnnotation(gpa, flag_names, mutually_exclusive_annotation);
     }
-    fn _hasHelpFlag(self: *Command) bool {
-        if (self.flags_ptr != null and self.flags_ptr.?.lookup("help") != null) return true;
-        if (self.parent) |p| return p._hasHelpFlag();
-        return false;
+    pub fn markFlagsOneRequired(self: *Command, gpa: std.mem.Allocator, flag_names: []const []const u8) anyerror!void {
+        self.mergePersistentFlags(gpa);
+        try self.markFlagGroupAnnotation(gpa, flag_names, one_required_annotation);
     }
-    pub fn initDefaultVersionFlag(self: *Command) void {
-        if (self.version.len == 0) return;
-        if (self.flags_ptr != null and self.flags_ptr.?.lookup("version") != null) return;
-        if (self._hasVersionFlag()) return;
-        if (self.flags_ptr == null) return;
-        var _v: bool = false;
-        self.flags_ptr.?.boolVarP(&_v, "version", "", false, "print the version") catch {};
+    pub fn markFlagsRequiredTogether(self: *Command, gpa: std.mem.Allocator, flag_names: []const []const u8) anyerror!void {
+        self.mergePersistentFlags(gpa);
+        try self.markFlagGroupAnnotation(gpa, flag_names, required_as_group_annotation);
     }
-    fn _hasVersionFlag(self: *Command) bool {
-        if (self.flags_ptr != null and self.flags_ptr.?.lookup("version") != null) return true;
-        if (self.parent) |p| return p._hasVersionFlag();
-        return false;
-    }
-    pub fn initDefaultHelpCmd(_: *Command) void {}
-    pub fn initDefaultCompletionCmd(_: *Command, io: std.Io, args: [][]const u8) void {
-        _ = io;
-        _ = args;
-    }
-    pub fn initCompleteCmd(_: *Command, io: std.Io, args: [][]const u8) void {
-        _ = io;
-        _ = args;
-    }
+
     pub fn usagePadding(self: *const Command) usize {
         return if (self.commands_max_use_len > 25) self.commands_max_use_len else 25;
     }
@@ -667,366 +2116,96 @@ pub const Command = struct {
     pub fn namePadding(self: *const Command) usize {
         return if (self.commands_max_name_len > 11) self.commands_max_name_len else 11;
     }
-    pub fn checkCommandGroups(_: *const Command) void {}
 
-    pub fn isFlagArg(arg: []const u8) bool {
-        return (arg.len >= 3 and std.mem.eql(u8, arg[0..2], "--")) or
-            (arg.len >= 2 and arg[0] == '-' and arg[1] != '-');
-    }
-
-    // ─── Flag Accessor Methods ───
-
-    /// Returns the local FlagSet for this command.
-    pub fn flags(self: *Command) ?*pflag.FlagSet {
-        if (self.flags_ptr) |fp| return fp;
-        return null;
-    }
-
-    /// Returns the persistent FlagSet for this command.
-    pub fn persistentFlags(self: *const Command) ?*pflag.FlagSet {
-        return self.pflags;
-    }
-
-    /// Returns flags that are not inherited from parent.
-    pub fn localFlags(self: *Command) ?*pflag.FlagSet {
-        self.mergePersistentFlags();
-        return self.lflags;
-    }
-
-    /// Returns flags inherited from parent.
-    pub fn inheritedFlags(self: *Command) ?*pflag.FlagSet {
-        self.mergePersistentFlags();
-        return self.iflags;
-    }
-
-    /// Returns persistent flags from parent commands.
-    pub fn parentsPflags(self: *const Command) ?*pflag.FlagSet {
-        return self.parents_pflags;
-    }
-
-    /// Returns flags that are not inherited from parent (same as localFlags).
-    pub fn nonInheritedFlags(self: *Command) ?*pflag.FlagSet {
-        return self.localFlags();
-    }
-
-    /// Returns local non-persistent flags (local flags that are not persistent).
-    /// Note: This is a simplified implementation. Full Go cobra creates a filtered FlagSet.
-    pub fn localNonPersistentFlags(self: *Command) ?*pflag.FlagSet {
-        // In Go cobra, this returns local flags that are NOT in persistent flags
-        // For now, we just return local flags. A full implementation would filter.
-        return self.localFlags();
-    }
-
-    /// Lookup a specific flag by name.
-    pub fn flag(self: *Command, flag_name: []const u8) ?*pflag.Flag {
-        if (self.flags()) |fs| return fs.lookup(flag_name);
-        return null;
-    }
-
-    // ─── Flag Query Methods ───
-
-    /// Returns true if the command has any flags.
-    pub fn hasFlags(self: *Command) bool {
-        if (self.flags()) |fs| if (fs.ordered_formal.items.len > 0) return true;
-        return self.hasPersistentFlags() or self.hasInheritedFlags();
-    }
-
-    /// Returns true if the command has local flags.
-    pub fn hasLocalFlags(self: *Command) bool {
-        if (self.flags()) |fs| return fs.ordered_formal.items.len > 0;
-        return false;
-    }
-
-    /// Returns true if the command has inherited flags.
-    pub fn hasInheritedFlags(self: *Command) bool {
-        if (self.inheritedFlags()) |fs| return fs.ordered_formal.items.len > 0;
-        return false;
-    }
-
-    /// Returns true if the command has persistent flags.
-    pub fn hasPersistentFlags(self: *Command) bool {
-        if (self.persistentFlags()) |fs| return fs.ordered_formal.items.len > 0;
-        return false;
-    }
-
-    /// Returns true if the command has available flags (including inherited).
-    pub fn hasAvailableFlags(self: *Command) bool {
-        if (self.flags()) |fs| if (fs.ordered_formal.items.len > 0) return true;
-        return self.hasAvailableInheritedFlags();
-    }
-
-    /// Returns true if the command has available local flags.
-    pub fn hasAvailableLocalFlags(self: *Command) bool {
-        if (self.flags()) |fs| return fs.ordered_formal.items.len > 0;
-        return false;
-    }
-
-    /// Returns true if the command has available inherited flags.
-    pub fn hasAvailableInheritedFlags(self: *Command) bool {
-        if (self.inheritedFlags()) |fs| return fs.ordered_formal.items.len > 0;
-        return false;
-    }
-
-    /// Returns true if the command has available persistent flags.
-    pub fn hasAvailablePersistentFlags(self: *Command) bool {
-        if (self.persistentFlags()) |fs| return fs.ordered_formal.items.len > 0;
-        return false;
-    }
-
-    // ─── Core Missing Methods ───
-
-    /// Validates that all required flags are present.
-    pub fn validateRequiredFlags(self: *Command, gpa: std.mem.Allocator) anyerror!void {
-        if (self.disable_flag_parsing) return;
-
-        var missing: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer missing.deinit(gpa);
-
-        if (self.flags()) |fs| {
-            fs.visitAll(struct {
-                fn callback(f: *pflag.Flag, ctx: ?*anyopaque) void {
-                    const list = @as(*std.ArrayListUnmanaged([]const u8), @ptrCast(@alignCast(ctx.?)));
-                    const alloc = @as(*std.mem.Allocator, @ptrCast(@alignCast(ctx.?)));
-                    if (f.annotations.get("cobra_annotation_bash_comp_one_required_flag")) |ann| {
-                        if (ann.len > 0 and std.mem.eql(u8, ann[0], "true") and !f.changed) {
-                            list.append(alloc.*, f.name) catch {};
-                        }
-                    }
-                }
-            }.callback, &missing);
-        }
-
-        if (missing.items.len > 0) {
-            return error.RequiredFlagsMissing;
-        }
-    }
-
-    /// Returns the usage string for this command.
-    pub fn usageString(self: *Command) []const u8 {
-        // Simplified: return the use field
-        return self.use;
-    }
-
-    /// Displays the help for this command.
-    pub fn help(self: *Command) anyerror!void {
-        if (self.help_func) |f| {
-            f(self, &.{});
-            return;
-        }
-        // Default help behavior
-        self.defaultHelpFunc();
-    }
-
-    /// Returns the help function for this command.
-    pub fn helpFunc(self: *const Command) ?HelpFuncType {
-        if (self.help_func) |f| return f;
-        if (self.hasParent()) return self.parent.?.helpFunc();
-        return null;
-    }
-
-    /// Returns the flag error function for this command.
-    pub fn flagErrorFunc(self: *const Command) ?FlagErrorFuncType {
-        if (self.flag_error_func) |f| return f;
-        if (self.hasParent()) return self.parent.?.flagErrorFunc();
-        return null;
-    }
-
-    /// Returns the usage function for this command.
-    pub fn usageFunc(self: *const Command) ?UsageFuncType {
-        if (self.usage_func) |f| return f;
-        if (self.hasParent()) return self.parent.?.usageFunc();
-        return null;
-    }
-
-    /// Returns the usage template for this command.
-    pub fn usageTemplate(self: *const Command) []const u8 {
-        if (self.usage_template.len > 0) return self.usage_template;
-        if (self.hasParent()) return self.parent.?.usageTemplate();
-        return default_usage_template;
-    }
-
-    /// Returns the help template for this command.
-    pub fn helpTemplate(self: *const Command) []const u8 {
-        if (self.help_template.len > 0) return self.help_template;
-        if (self.hasParent()) return self.parent.?.helpTemplate();
-        return default_help_template;
-    }
-
-    /// Returns the version template for this command.
-    pub fn versionTemplate(self: *const Command) []const u8 {
-        if (self.version_template.len > 0) return self.version_template;
-        if (self.hasParent()) return self.parent.?.versionTemplate();
-        return default_version_template;
-    }
-
-    /// Sets the usage template for this command.
-    pub fn setUsageTemplate(self: *Command, tmpl: []const u8) void {
-        self.usage_template = tmpl;
-    }
-
-    /// Sets the help template for this command.
-    pub fn setHelpTemplate(self: *Command, tmpl: []const u8) void {
-        self.help_template = tmpl;
-    }
-
-    /// Sets the version template for this command.
-    pub fn setVersionTemplate(self: *Command, tmpl: []const u8) void {
-        self.version_template = tmpl;
-    }
-
-    // ─── Utility Methods ───
-
-    /// Returns the name and all aliases.
-    pub fn nameAndAliases(self: *const Command) []const []const u8 {
-        // Simplified: return just the name for now
-        return &.{self.name()};
-    }
-
-    /// Returns the usage line for this command.
-    pub fn useLine(self: *const Command) []const u8 {
-        return self.use;
-    }
-
-    /// Resets all flags on this command.
-    pub fn resetFlags(self: *Command) void {
-        self.flags_ptr = null;
-        self.pflags = null;
-        self.lflags = null;
-        self.iflags = null;
-        self.parents_pflags = null;
-        self.lnpflags = null;
-    }
-
-    /// Returns true if the command name or any alias starts with the given prefix.
-    pub fn hasNameOrAliasPrefix(self: *const Command, prefix: []const u8) bool {
-        if (std.mem.startsWith(u8, self.name(), prefix)) return true;
-        for (self.aliases) |a| {
-            if (std.mem.startsWith(u8, a, prefix)) return true;
-        }
-        return false;
-    }
-
-    // ─── Command Tree Search ───
-
-    /// Finds the command that matches the given arguments.
-    pub fn find(self: *Command, args: []const []const u8) struct { cmd: *Command, args: []const []const u8, err: ?anyerror } {
-        var cmd: *Command = self;
-        var remaining = args;
-
-        while (remaining.len > 0) {
-            const arg = remaining[0];
-            if (isFlagArg(arg)) break;
-
-            var found: ?*Command = null;
-            for (cmd.commands.items) |sub| {
-                if (std.mem.eql(u8, sub.name(), arg) or sub.hasAlias(arg)) {
-                    found = sub;
-                    break;
-                }
-            }
-
-            if (found) |next| {
-                cmd = next;
-                remaining = remaining[1..];
-            } else {
-                break;
-            }
-        }
-
-        return .{ .cmd = cmd, .args = remaining, .err = null };
-    }
-
-    /// Traverses the command tree, similar to find but continues on error.
-    pub fn traverse(self: *Command, args: []const []const u8) @TypeOf(self.find(args)) {
-        return self.find(args);
-    }
-
-    /// Returns the index of the -- separator in args, or -1 if not found.
-    pub fn argsLenAtDash(self: *Command) usize {
-        for (self.args_slice, 0..) |arg, i| {
-            if (std.mem.eql(u8, arg, "--")) return i;
-        }
-        return std.math.maxInt(usize);
-    }
-
-    // ─── Flag Merging ───
-
-    /// Merges persistent flags from parent commands.
-    pub fn mergePersistentFlags(self: *Command) void {
-        self.updateParentsPflags();
-        // Merge parent persistent flags into local flags
-        // This makes parent persistent flags available to this command
-        if (self.parents_pflags) |parent_pf| {
-            if (self.flags_ptr) |local_flags| {
-                // In a full implementation, we would copy flag definitions from parent_pf to local_flags
-                // For now, store reference for query methods to use
-                _ = local_flags;
-                _ = parent_pf;
-            }
-        }
-    }
-
-    /// Updates the parents_pflags with persistent flags from all parents.
-    pub fn updateParentsPflags(self: *Command) void {
-        if (!self.hasParent()) return;
-
-        // Clear current parents_pflags
-        self.parents_pflags = null;
-
-        var parent: ?*Command = self.parent;
-        while (parent) |p| {
-            if (p.persistentFlags()) |pf| {
-                // Store the persistent flags reference
-                // In a full implementation, we would merge all parent persistent flags
-                // For now, use the closest parent's persistent flags
-                if (self.parents_pflags == null) {
-                    self.parents_pflags = pf;
-                }
-            }
-            parent = if (p.hasParent()) p.parent else null;
-        }
-    }
-
-    /// Parses the flags from the command's args.
-    pub fn parseFlags(self: *Command, io: std.Io) anyerror!void {
-        if (self.disable_flag_parsing) return;
-
+    /// Debug helper: writes the resolved flagset contents to the writer (Go: DebugFlags()).
+    pub fn debugFlags(self: *Command, io: std.Io) void {
+        const w = self.errOrStderr(io);
         if (self.flags_ptr) |fs| {
-            fs.parse(self.args_slice) catch |err| {
-                if (self.flag_error_func) |f| {
-                    return f(self, err);
+            for (fs.ordered_formal.items) |f| {
+                if (f.value.string(fs.gpa)) |val| {
+                    defer fs.gpa.free(val);
+                    w.print("--{s}: {s}\n", .{ f.name, val }) catch {};
+                } else |_| {
+                    w.print("--{s}: ?\n", .{f.name}) catch {};
                 }
-                return err;
-            };
+            }
         }
-        _ = io;
-    }
-
-    /// Default help function implementation.
-    fn defaultHelpFunc(self: *Command) void {
-        if (self.long.len > 0) {
-            std.debug.print("{s}\n\n", .{self.long});
-        } else if (self.short.len > 0) {
-            std.debug.print("{s}\n\n", .{self.short});
-        }
+        w.flush() catch {};
     }
 };
+
+/// Removes a borrowed flag (by pointer identity) from the destination set.
+fn removeBorrowedFlags(fs: *pflag.FlagSet, borrowed: []const *pflag.Flag, start_formal: usize) void {
+    for (borrowed) |f| {
+        _ = fs.formal.remove(f.name);
+        if (f.shorthand.len > 0) {
+            if (fs.shorthandLookup(f.shorthand[0]) == f) {
+                _ = fs.shorthands.remove(f.shorthand[0]);
+            }
+        }
+    }
+    // Restore ordered_formal to pre-merge contents (borrowed flags were appended at the end).
+    if (fs.ordered_formal.items.len > start_formal) {
+        fs.ordered_formal.shrinkRetainingCapacity(start_formal);
+    }
+}
+
+/// Adds every flag from src into dst as a *borrowed* pointer (no cloning, no ownership).
+fn addBorrowedFlags(dst: *pflag.FlagSet, src: *pflag.FlagSet) void {
+    for (src.ordered_formal.items) |f| {
+        if (dst.lookup(f.name) != null) continue;
+        if (f.shorthand.len > 0 and dst.shorthandLookup(f.shorthand[0]) != null) continue;
+        dst.addFlag(f) catch continue;
+    }
+}
+
+/// Drops borrowed flags from dst that also exist in other (used to compute "local" views).
+fn removeFlagsPresent(dst: *pflag.FlagSet, other: *pflag.FlagSet) void {
+    var i: usize = 0;
+    while (i < dst.ordered_formal.items.len) {
+        const f = dst.ordered_formal.items[i];
+        if (other.lookup(f.name) != null) {
+            _ = dst.formal.remove(f.name);
+            if (f.shorthand.len > 0) {
+                _ = dst.shorthands.remove(f.shorthand[0]);
+            }
+            _ = dst.ordered_formal.orderedRemove(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Clears a FlagSet's flag registries WITHOUT freeing Flag storage (borrowed views only).
+fn clearBorrowed(fs_opt: *?pflag.FlagSet) void {
+    if (fs_opt.* == null) return;
+    const fs = &fs_opt.*.?;
+    fs.formal.clearRetainingCapacity();
+    fs.shorthands.clearRetainingCapacity();
+    fs.ordered_formal.clearRetainingCapacity();
+}
+
+/// Copy of args with the first occurrence of x removed. Returned slice may reference a
+/// gpa allocation (caller-scoped); the common index-0 case allocates nothing.
+fn argsMinusFirstX(gpa: std.mem.Allocator, args: []const []const u8, x: []const u8) ?[]const []const u8 {
+    for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, x)) {
+            if (i == 0) return args[1..];
+            const out = gpa.alloc(@TypeOf(args[0]), args.len - 1) catch return null;
+            @memcpy(out[0..i], args[0..i]);
+            @memcpy(out[i..], args[i + 1 ..]);
+            return out;
+        }
+    }
+    return null;
+}
+
 pub const FlagSet = pflag.FlagSet;
 pub const Flag = pflag.Flag;
 
+/// Go's default usage template (stored for parity; rendering is built-in).
 pub const default_usage_template = "Usage:{{if .Runnable}}\n  {{.UseLine}}{{end}}\n";
+/// Go's default help template (stored for parity; rendering is built-in).
 pub const default_help_template = "{{with (or .Long .Short)}}{{.}}{{end}}";
+/// Go's default version template (stored for parity; rendering is built-in).
 pub const default_version_template = "{{.DisplayName}} version {{.Version}}\n";
-
-pub fn defaultUsageFunc(writer: *std.Io.Writer, cmd: *Command) anyerror!void {
-    writer.interface.print("Usage:", .{}) catch {};
-    if (cmd.runnable()) writer.interface.print("\n  {s}", .{cmd.use}) catch {};
-    if (cmd.hasAvailableSubCommands()) writer.interface.print("\n  {s} [command]", .{cmd.commandPath()}) catch {};
-    if (cmd.aliases.len > 0) writer.interface.print("\n\nAliases:\n  {s}", .{cmd.name()}) catch {};
-    writer.interface.print("\n", .{}) catch {};
-}
-pub fn defaultHelpFunc(writer: *std.Io.Writer, cmd: *Command) anyerror!void {
-    var usage = cmd.long;
-    if (usage.len == 0) usage = cmd.short;
-    if (usage.len > 0) writer.interface.print("{s}\n\n", .{usage}) catch {};
-}

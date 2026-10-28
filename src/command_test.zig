@@ -191,7 +191,8 @@ test "execute with run_e" {
     const args: []const []const u8 = &.{};
     var rootCmd = Command{ .use = "root", .run_e = emptyRunE };
     rootCmd.setArgs(args);
-    rootCmd.executeWrapper() catch {};
+    defer rootCmd.deinit(gpa);
+    rootCmd.executeWrapper(gpa) catch {};
     try std.testing.expect(true);
 }
 
@@ -199,7 +200,8 @@ test "execute with run function" {
     const args: []const []const u8 = &.{};
     var rootCmd = Command{ .use = "root", .run = emptyRun };
     rootCmd.setArgs(args);
-    rootCmd.executeWrapper() catch {};
+    defer rootCmd.deinit(gpa);
+    rootCmd.executeWrapper(gpa) catch {};
     try std.testing.expect(true);
 }
 
@@ -350,27 +352,35 @@ test "isAdditionalHelpTopicCommand" {
 
 // ─── Flag Accessor Methods Tests ───
 
-test "flags returns null when not set" {
+test "flagsPtr returns null when not set" {
     var cmd = Command{ .use = "root" };
-    const fs = cmd.flags();
-    try std.testing.expect(fs == null);
+    try std.testing.expect(cmd.flagsPtr() == null);
 }
 
-test "persistentFlags returns null when not set" {
+test "flags(gpa) lazily creates owned flagset" {
     var cmd = Command{ .use = "root" };
-    const pfs = cmd.persistentFlags();
-    try std.testing.expect(pfs == null);
+    defer cmd.deinit(gpa);
+    const fs = cmd.flags(gpa);
+    try std.testing.expect(fs.lookup("anything") == null);
 }
 
-test "localFlags returns null when not set" {
+test "persistentFlagsPtr returns null when not set" {
     var cmd = Command{ .use = "root" };
-    const lfs = cmd.localFlags();
-    try std.testing.expect(lfs == null);
+    try std.testing.expect(cmd.persistentFlagsPtr() == null);
 }
 
-test "inheritedFlags returns null when not set" {
+test "localFlags builds empty view when no flags" {
     var cmd = Command{ .use = "root" };
-    const ifs = cmd.inheritedFlags();
+    defer cmd.deinit(gpa);
+    const lfs = cmd.localFlags(gpa);
+    try std.testing.expect(lfs != null);
+    try std.testing.expect(lfs.?.ordered_formal.items.len == 0);
+}
+
+test "inheritedFlags returns null when no parent" {
+    var cmd = Command{ .use = "root" };
+    defer cmd.deinit(gpa);
+    const ifs = cmd.inheritedFlags(gpa);
     try std.testing.expect(ifs == null);
 }
 
@@ -404,9 +414,17 @@ test "hasAvailableFlags returns false when no flags" {
 
 // ─── Core Missing Methods Tests ───
 
-test "usageString returns use field" {
+test "useLine returns use field for root" {
     var cmd = Command{ .use = "root [flags]" };
-    try std.testing.expectEqualStrings("root [flags]", cmd.usageString());
+    try std.testing.expectEqualStrings("root [flags]", cmd.useLine());
+}
+
+test "usageString renders usage block" {
+    var cmd = Command{ .use = "root", .run = emptyRun };
+    defer cmd.deinit(gpa);
+    const usage = try cmd.usageString(gpa);
+    defer gpa.free(usage);
+    TestHelper.checkStringContains(usage, "Usage:");
 }
 
 test "helpFunc returns null when not set" {
@@ -498,7 +516,7 @@ test "hasNameOrAliasPrefix matches alias" {
 
 test "find returns self when no args" {
     var cmd = Command{ .use = "root", .run = emptyRun };
-    const result = cmd.find(&.{});
+    const result = cmd.find(gpa, &.{});
     try std.testing.expect(result.cmd == &cmd);
     try std.testing.expect(result.args.len == 0);
 }
@@ -508,7 +526,7 @@ test "find returns child command" {
     var child = Command{ .use = "child", .run = emptyRun };
     addCommand(&root, &child);
     defer root.deinit(gpa);
-    const result = root.find(&.{"child"});
+    const result = root.find(gpa, &.{"child"});
     try std.testing.expect(result.cmd == &child);
 }
 
@@ -517,7 +535,7 @@ test "find returns remaining args" {
     var child = Command{ .use = "child", .run = emptyRun };
     addCommand(&root, &child);
     defer root.deinit(gpa);
-    const result = root.find(&.{ "child", "arg1", "arg2" });
+    const result = root.find(gpa, &.{ "child", "arg1", "arg2" });
     try std.testing.expect(result.cmd == &child);
     try std.testing.expect(result.args.len == 2);
 }
@@ -527,39 +545,46 @@ test "traverse behaves like find" {
     var child = Command{ .use = "child", .run = emptyRun };
     addCommand(&root, &child);
     defer root.deinit(gpa);
-    const result = root.traverse(&.{"child"});
+    const result = root.traverse(gpa, &.{"child"});
     try std.testing.expect(result.cmd == &child);
 }
 
-test "argsLenAtDash returns maxInt when no dash" {
+test "argsLenAtDash returns -1 when no flags parsed" {
     var cmd = Command{ .use = "root", .args_slice = &.{ "arg1", "arg2" } };
-    const idx = cmd.argsLenAtDash();
-    try std.testing.expect(idx == std.math.maxInt(usize));
+    try std.testing.expectEqual(@as(isize, -1), cmd.argsLenAtDash());
 }
 
-test "argsLenAtDash returns index of dash" {
-    var cmd = Command{ .use = "root", .args_slice = &.{ "arg1", "--", "arg2" } };
-    const idx = cmd.argsLenAtDash();
-    try std.testing.expectEqual(@as(usize, 1), idx);
+test "argsLenAtDash tracks dash position from parse" {
+    const pflag = @import("command.zig").pflag;
+    var cmd = Command{ .use = "root" };
+    var fs = pflag.FlagSet.init(gpa, "t");
+    defer fs.deinit();
+    cmd.flags_ptr = &fs;
+    fs.error_handling = .continue_on_error;
+    fs.parse(&.{ "arg1", "--", "arg2" }) catch {};
+    try std.testing.expectEqual(@as(isize, 1), cmd.argsLenAtDash());
 }
 
 // ─── Flag Merging Tests ───
 
-test "mergePersistentFlags does not crash" {
+test "mergePersistentFlags builds views" {
     var cmd = Command{ .use = "root" };
-    cmd.mergePersistentFlags();
-    try std.testing.expect(true);
+    defer cmd.deinit(gpa);
+    cmd.mergePersistentFlags(gpa);
+    try std.testing.expect(cmd.lflags != null);
 }
 
-test "updateParentsPflags does not crash" {
+test "updateParentsPflags does not crash without parent" {
     var cmd = Command{ .use = "root" };
-    cmd.updateParentsPflags();
-    try std.testing.expect(true);
+    defer cmd.deinit(gpa);
+    cmd.updateParentsPflags(gpa, false);
+    try std.testing.expect(cmd.parents_pflags == null);
 }
 
 test "parseFlags does not crash when no flags" {
     var cmd = Command{ .use = "root" };
+    defer cmd.deinit(gpa);
     const io = std.Io.Threaded.global_single_threaded.*.io();
-    cmd.parseFlags(io) catch {};
+    cmd.parseFlags(io, gpa, &.{}) catch {};
     try std.testing.expect(true);
 }

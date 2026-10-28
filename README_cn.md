@@ -71,6 +71,7 @@ const App = struct {
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
+    cobra.setEnviron(init.environ_map); // enables ActiveHelp / env-driven config
     var app = App{};
 
     // ── Flag 设置 ──
@@ -83,15 +84,14 @@ pub fn main(init: std.process.Init) !void {
         .use   = "hello",
         .short = "向某人问好",
         .long  = "打印问候语。默认问候 \"world\"。",
-        .run   = helloRun,
-        .flags = &flags,
+        .run       = helloRun,
+        .flags_ptr = &flags,
     };
-    helloCmd.iflags = @ptrCast(@alignCast(&app));
+    helloCmd.user_data = @ptrCast(@alignCast(&app));
 
     var rootCmd = cobra.Command{
         .use   = "myapp",
         .short = "一个友好的 CLI 演示",
-        .flags = &flags,
     };
     rootCmd.addCommand(gpa, &.{&helloCmd});
     defer rootCmd.deinit(gpa);
@@ -99,14 +99,16 @@ pub fn main(init: std.process.Init) !void {
     // ── 解析参数并执行 ──
     const alloc = init.arena.allocator();
     const raw = try init.minimal.args.toSlice(alloc);
-    const effective = if (raw.len > 1) raw[1..] else &.{};
+    const effective = if (raw.len > 1) @as([]const []const u8, raw[1..]) else &.{};
     rootCmd.setArgs(effective);
-    rootCmd.executeWrapper() catch {};
+    rootCmd.executeWrapper(gpa) catch {
+        std.process.exit(1); // errors are already printed; propagate via exit code
+    };
 }
 
 fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
     _ = args;
-    const app: *App = @ptrCast(@alignCast(cmd.iflags.?));
+    const app: *App = @ptrCast(@alignCast(cmd.user_data.?));
     std.debug.print("hello {s}\n", .{app.name});
 }
 ```
@@ -152,7 +154,11 @@ fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
 | 方法 | 说明 |
 |--------|------|
 | `addCommand(gpa, cmds)` | 添加子命令 |
-| `executeWrapper()` | 解析 flag 并执行 |
+| `executeWrapper(gpa)` | 解析 flag 并执行(示例中以退出码 1 传播错误) |
+| `flags(gpa)` | 本地 FlagSet(惰性创建) |
+| `persistentFlags(gpa)` | 持久 FlagSet,子命令自动继承 |
+| `markFlagsMutuallyExclusive(gpa, names)` | flag 分组约束(另有 `OneRequired` / `RequiredTogether`) |
+| `registerFlagCompletionFunc(gpa, name, fn)` | 注册 flag 值补全 |
 | `setArgs(args)` | 在 execute 前设置参数 |
 | `deinit(gpa)` | 释放所有已分配资源 |
 | `root()` | 获取根命令 |
@@ -262,8 +268,8 @@ var cmd = cobra.Command{
     .silence_errors = false,
 };
 // 将输出重定向到自定义 writer
-cmd.setOutWriter(&myWriter);
-cmd.setErrWriter(&myErrWriter);
+cmd.setOut(&myWriter);
+cmd.setErr(&myErrWriter);
 // 自定义帮助函数
 cmd.setHelpFunc(myHelpFn);
 ```
@@ -300,13 +306,13 @@ var internalCmd = cobra.Command{
 const fg = @import("cobra").flag_groups_mod;
 
 // 这些 flag 必须同时使用
-fg.markFlagsRequiredTogether(&cmd, &.{ "username", "password" });
+try fg.markFlagsRequiredTogether(&cmd, gpa, &.{ "username", "password" });
 
 // 这些 flag 中至少有一个必填
-fg.markFlagsOneRequired(&cmd, &.{ "file", "stdin" });
+try fg.markFlagsOneRequired(&cmd, gpa, &.{ "file", "stdin" });
 
 // 这些 flag 不能同时使用
-fg.markFlagsMutuallyExclusive(&cmd, &.{ "verbose", "quiet" });
+try fg.markFlagsMutuallyExclusive(&cmd, gpa, &.{ "verbose", "quiet" });
 ```
 
 ### Shell 补全
@@ -314,7 +320,7 @@ fg.markFlagsMutuallyExclusive(&cmd, &.{ "verbose", "quiet" });
 ```zig
 var cmd = cobra.Command{
     .use = "deploy",
-    .valid_args_fn = cobra.FixedCompletions(
+    .valid_args_function = cobra.FixedCompletions(
         &.{ "prod\t生产环境", "staging\t预发布环境" },
         cobra.ShellCompDirective.no_file_comp,
     ),
@@ -334,7 +340,7 @@ var cmd = cobra.Command{
 
 ```bash
 zig build                  # 构建库
-zig build test             # 运行 83 个测试
+zig build test             # 运行 139 个测试
 zig build run-demo -- hello --name=Sisyphus
 zig build run-dockr -- container ls
 zig fmt src/ examples/     # 格式化代码

@@ -19,8 +19,7 @@ pub fn executeCommand(gpa: std.mem.Allocator, root: *Command, args: []const []co
 }
 
 pub fn executeCommandC(gpa: std.mem.Allocator, root: *Command, args: []const []const u8) TestOutputC {
-    _ = gpa;
-    var buf: [4096]u8 = undefined;
+    var buf: [16384]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     var test_reader = std.Io.Reader.fixed("");
 
@@ -29,31 +28,34 @@ pub fn executeCommandC(gpa: std.mem.Allocator, root: *Command, args: []const []c
     root.setIn(&test_reader);
     root.setArgs(args);
 
-    root.executeWrapper() catch {};
+    var err: ?anyerror = null;
+    root.executeWrapper(gpa) catch |e| {
+        err = e;
+    };
     const output = std.Io.Writer.buffered(&writer);
 
     return .{
         .cmd = root,
         .output = output,
-        .err = null,
+        .err = err,
     };
 }
 
-pub fn checkStringContains(t: *std.testing.T, got: []const u8, expected: []const u8) void {
-    if (!std.mem.indexOf(u8, got, expected)) {
-        t.fail("expected to contain: \"{s}\"\ngot: \"{s}\"", .{ expected, got });
+pub fn checkStringContains(got: []const u8, expected: []const u8) void {
+    if (std.mem.indexOf(u8, got, expected) == null) {
+        std.testing.failPrint("expected to contain: \"{s}\"\ngot: \"{s}\"", .{ expected, got });
     }
 }
 
-pub fn checkStringOmits(t: *std.testing.T, got: []const u8, expected: []const u8) void {
-    if (std.mem.indexOf(u8, got, expected)) |_| {
-        t.fail("expected NOT to contain: \"{s}\"\ngot: \"{s}\"", .{ expected, got });
+pub fn checkStringOmits(got: []const u8, expected: []const u8) void {
+    if (std.mem.indexOf(u8, got, expected) != null) {
+        std.testing.failPrint("expected NOT to contain: \"{s}\"\ngot: \"{s}\"", .{ expected, got });
     }
 }
 
-pub fn assertNoErr(t: *std.testing.T, e: anyerror!void) void {
+pub fn assertNoErr(e: anyerror!void) void {
     e catch |err| {
-        t.fail("Unexpected error: {}", .{err});
+        std.testing.failPrint("Unexpected error: {s}", .{@errorName(err)});
     };
 }
 

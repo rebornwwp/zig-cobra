@@ -32,8 +32,14 @@ test "appendActiveHelp with empty comps" {
     try std.testing.expect(result.len == 1);
 }
 
-test "getActiveHelpConfig returns empty" {
-    var cmd = TestHelper.makeCommand("test", TestHelper.emptyRun);
-    const config = try active_help.getActiveHelpConfig(&cmd, gpa);
+test "getActiveHelpConfig returns empty without environ" {
+    var buf: [64]u8 = undefined;
+    const config = active_help.getActiveHelpConfig("test", &buf);
     try std.testing.expectEqualStrings("", config);
+}
+
+test "configEnvVar sanitizes and uppercases" {
+    var buf: [64]u8 = undefined;
+    const v = active_help.configEnvVar("my-app", "ACTIVE_HELP", &buf);
+    try std.testing.expectEqualStrings("MY_APP_ACTIVE_HELP", v);
 }

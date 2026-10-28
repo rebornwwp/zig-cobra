@@ -28,7 +28,7 @@ pub fn init_run(gpa: std.mem.Allocator, cmd: *Command, flags: *pflag.FlagSet, op
         .flags_ptr = flags,
         .args_validator = cobra.MinimumNArgs(1),
     };
-    cmd.iflags = @ptrCast(@alignCast(opts));
+    cmd.user_data = @ptrCast(@alignCast(opts));
 }
 
 pub fn init_ls(gpa: std.mem.Allocator, cmd: *Command, flags: *pflag.FlagSet) void {
@@ -80,7 +80,7 @@ fn io() std.Io {
 }
 
 fn runFn(cmd: *Command, args: [][]const u8) void {
-    const opts: *types.ContainerRunOpts = @ptrCast(@alignCast(cmd.iflags.?));
+    const opts: *types.ContainerRunOpts = @ptrCast(@alignCast(cmd.user_data.?));
     var buf: [512]u8 = undefined;
     const msg = types.formatRun(opts, if (args.len > 0) args[0] else "image", &buf);
     var ob: [256]u8 = undefined;

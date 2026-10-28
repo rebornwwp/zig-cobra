@@ -23,19 +23,46 @@ pub const LegacyArgs = args_mod.legacyArgs;
 
 pub const completions_mod = @import("completions.zig");
 pub const Completion = completions_mod.Completion;
+pub const CompResult = completions_mod.CompResult;
 pub const CompletionFunc = completions_mod.CompletionFunc;
 pub const ShellCompDirective = completions_mod.ShellCompDirective;
 pub const CompletionOptions = completions_mod.CompletionOptions;
 pub const CompletionWithDesc = completions_mod.completionWithDesc;
 pub const NoFileCompletions = completions_mod.noFileCompletions;
 pub const FixedCompletions = completions_mod.fixedCompletions;
+pub const GenBashCompletionV2 = completions_mod.genBashCompletionV2;
+pub const GenZshCompletion = completions_mod.genZshCompletion;
+pub const GenFishCompletion = completions_mod.genFishCompletion;
+pub const GenPowerShellCompletion = completions_mod.genPowerShellCompletion;
+pub const GetCompletions = completions_mod.getCompletions;
 
 pub const active_help_mod = @import("active_help.zig");
 pub const AppendActiveHelp = active_help_mod.appendActiveHelp;
 pub const GetActiveHelpConfig = active_help_mod.getActiveHelpConfig;
 
+/// Environment variables for env-driven configuration (ActiveHelp, completion
+/// descriptions). Call from main() with `init.environ_map` to enable.
+pub fn setEnviron(m: ?*const std.process.Environ.Map) void {
+    active_help_mod.environ = m;
+}
+
 pub const flag_groups_mod = @import("flag_groups.zig");
+pub const MarkFlagsRequiredTogether = flag_groups_mod.markFlagsRequiredTogether;
+pub const MarkFlagsOneRequired = flag_groups_mod.markFlagsOneRequired;
+pub const MarkFlagsMutuallyExclusive = flag_groups_mod.markFlagsMutuallyExclusive;
 pub const shell_completions_mod = @import("shell_completions.zig");
+pub const MarkFlagRequired = shell_completions_mod.markFlagRequired;
+pub const MarkPersistentFlagRequired = shell_completions_mod.markPersistentFlagRequired;
+pub const MarkFlagFilename = shell_completions_mod.markFlagFilename;
+pub const MarkPersistentFlagFilename = shell_completions_mod.markPersistentFlagFilename;
+pub const MarkFlagDirname = shell_completions_mod.markFlagDirname;
+pub const MarkPersistentFlagDirname = shell_completions_mod.markPersistentFlagDirname;
+pub const MarkFlagCustom = shell_completions_mod.markFlagCustom;
+
+pub const doc_mod = @import("doc/md_docs.zig");
+pub const man_doc_mod = @import("doc/man_docs.zig");
+pub const yaml_doc_mod = @import("doc/yaml_docs.zig");
+pub const rest_doc_mod = @import("doc/rest_docs.zig");
 
 /// Default: prefix matching disabled
 pub const default_prefix_matching: bool = false;

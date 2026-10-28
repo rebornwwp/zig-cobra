@@ -1,7 +1,7 @@
 .{
     .name = .cobra,
     .fingerprint = 0x171a4821ec9cd848,
-    .version = "0.1.0",
+    .version = "0.3.0",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .pflag = .{

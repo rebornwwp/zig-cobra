@@ -73,6 +73,7 @@ const App = struct {
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
+    cobra.setEnviron(init.environ_map); // enables ActiveHelp / env-driven config
     var app = App{};
 
     // ── Flag setup ──
@@ -85,15 +86,14 @@ pub fn main(init: std.process.Init) !void {
         .use   = "hello",
         .short = "Say hello to someone",
         .long  = "Prints a greeting. Defaults to \"world\".",
-        .run   = helloRun,
-        .flags = &flags,
+        .run       = helloRun,
+        .flags_ptr = &flags,
     };
-    helloCmd.iflags = @ptrCast(@alignCast(&app));
+    helloCmd.user_data = @ptrCast(@alignCast(&app));
 
     var rootCmd = cobra.Command{
         .use   = "myapp",
         .short = "A friendly CLI demo",
-        .flags = &flags,
     };
     rootCmd.addCommand(gpa, &.{&helloCmd});
     defer rootCmd.deinit(gpa);
@@ -101,14 +101,16 @@ pub fn main(init: std.process.Init) !void {
     // ── Parse args and execute ──
     const alloc = init.arena.allocator();
     const raw = try init.minimal.args.toSlice(alloc);
-    const effective = if (raw.len > 1) raw[1..] else &.{};
+    const effective = if (raw.len > 1) @as([]const []const u8, raw[1..]) else &.{};
     rootCmd.setArgs(effective);
-    rootCmd.executeWrapper() catch {};
+    rootCmd.executeWrapper(gpa) catch {
+        std.process.exit(1); // errors are already printed; propagate via exit code
+    };
 }
 
 fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
     _ = args;
-    const app: *App = @ptrCast(@alignCast(cmd.iflags.?));
+    const app: *App = @ptrCast(@alignCast(cmd.user_data.?));
     std.debug.print("hello {s}\n", .{app.name});
 }
 ```
@@ -154,7 +156,11 @@ The `Command` struct is the core of cobra. Key fields:
 | Method | Description |
 |--------|-------------|
 | `addCommand(gpa, cmds)` | Add subcommands |
-| `executeWrapper()` | Parse flags and execute |
+| `executeWrapper(gpa)` | Parse flags and execute (exits 1 on error via examples) |
+| `flags(gpa)` | Local FlagSet (lazily created) |
+| `persistentFlags(gpa)` | Persistent FlagSet, inherited by subcommands |
+| `markFlagsMutuallyExclusive(gpa, names)` | Flag groups (also `OneRequired` / `RequiredTogether`) |
+| `registerFlagCompletionFunc(gpa, name, fn)` | Register flag value completion |
 | `setArgs(args)` | Set arguments before execution |
 | `deinit(gpa)` | Free all allocated resources |
 | `root()` | Get root command |
@@ -264,8 +270,8 @@ var cmd = cobra.Command{
     .silence_errors = false,
 };
 // Redirect output to custom writer
-cmd.setOutWriter(&myWriter);
-cmd.setErrWriter(&myErrWriter);
+cmd.setOut(&myWriter);
+cmd.setErr(&myErrWriter);
 // Custom help function
 cmd.setHelpFunc(myHelpFn);
 ```
@@ -302,13 +308,13 @@ var internalCmd = cobra.Command{
 const fg = @import("cobra").flag_groups_mod;
 
 // These flags must be used together
-fg.markFlagsRequiredTogether(&cmd, &.{ "username", "password" });
+try fg.markFlagsRequiredTogether(&cmd, gpa, &.{ "username", "password" });
 
 // At least one of these flags is required
-fg.markFlagsOneRequired(&cmd, &.{ "file", "stdin" });
+try fg.markFlagsOneRequired(&cmd, gpa, &.{ "file", "stdin" });
 
 // These flags cannot be used together
-fg.markFlagsMutuallyExclusive(&cmd, &.{ "verbose", "quiet" });
+try fg.markFlagsMutuallyExclusive(&cmd, gpa, &.{ "verbose", "quiet" });
 ```
 
 ### Shell Completion
@@ -316,7 +322,7 @@ fg.markFlagsMutuallyExclusive(&cmd, &.{ "verbose", "quiet" });
 ```zig
 var cmd = cobra.Command{
     .use = "deploy",
-    .valid_args_fn = cobra.FixedCompletions(
+    .valid_args_function = cobra.FixedCompletions(
         &.{ "prod\tProduction environment", "staging\tStaging environment" },
         cobra.ShellCompDirective.no_file_comp,
     ),
@@ -336,7 +342,7 @@ Requires **Zig 0.17.0**.
 
 ```bash
 zig build                  # Build library
-zig build test             # Run 83 tests
+zig build test             # Run 139 tests
 zig build run-demo -- hello --name=Sisyphus
 zig build run-dockr -- container ls
 zig fmt src/ examples/     # Format code

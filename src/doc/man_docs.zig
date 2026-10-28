@@ -1,25 +1,185 @@
 //! Man page generation. Maps from doc/man_docs.go
 const std = @import("std");
-const Command = @import("../command.zig").Command;
+const command_mod = @import("../command.zig");
+const Command = command_mod.Command;
 const util = @import("util.zig");
 
 pub const GenManHeader = struct {
     title: []const u8 = "",
     section: []const u8 = "",
-    date: ?std.time.Instant = null,
+    /// Unix timestamp for the header date (null = today).
+    date: ?i64 = null,
     source: []const u8 = "",
     manual: []const u8 = "",
 };
 
-pub fn genMan(cmd: *Command, io: std.Io, header: ?*GenManHeader, writer: *std.Io.Writer) anyerror!void {
-    _ = cmd;
-    _ = io;
-    _ = header;
-    _ = writer;
+const month_names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+/// Formats a unix timestamp as "Mon DD, YYYY" (Go: time.Now().Format("Jan 02, 2006")).
+fn formatDate(buf: []u8, unix_secs: i64) []const u8 {
+    const days: i64 = @divFloor(unix_secs, 86400);
+    // Civil-from-days algorithm (Howard Hinnant).
+    const z = days + 719468;
+    const era: i64 = @divFloor(if (z >= 0) z else z - 146096, 146097);
+    const doe: u64 = @intCast(z - era * 146097);
+    const yoe: u64 = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    var y: i64 = @as(i64, @intCast(yoe)) + era * 400;
+    const doy: u64 = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const mp: u64 = (5 * doy + 2) / 153;
+    const d: u64 = doy - (153 * mp + 2) / 5 + 1;
+    const m: u64 = if (mp < 10) mp + 3 else mp - 9;
+    if (m <= 2) y += 1;
+    var w = std.Io.Writer.fixed(buf);
+    w.print("{s} {d:0>2}, {d}", .{ month_names[m - 1], d, y }) catch {};
+    return buf[0..w.end];
 }
-pub fn genManTree(cmd: *Command, io: std.Io, header: ?*GenManHeader, dir: []const u8) anyerror!void {
-    _ = cmd;
+
+fn writeUpper(w: *std.Io.Writer, s: []const u8) void {
+    for (s) |c| {
+        w.print("{c}", .{std.ascii.toUpper(c)}) catch {};
+    }
+}
+
+/// genMan creates a man page for cmd (Go: GenMan).
+pub fn genMan(gpa: std.mem.Allocator, cmd: *Command, io: std.Io, header: ?*const GenManHeader, w: *std.Io.Writer) anyerror!void {
     _ = io;
-    _ = header;
-    _ = dir;
+    cmd.initDefaultHelpCmd(gpa);
+    cmd.initDefaultHelpFlag(gpa);
+    cmd.mergePersistentFlags(gpa);
+
+    const section: []const u8 = if (header) |h| (if (h.section.len > 0) h.section else "1") else "1";
+
+    var date_buf: [32]u8 = undefined;
+    const date_str = if (header) |h|
+        (if (h.date) |d| formatDate(&date_buf, d) else formatDate(&date_buf, std.time.timestamp()))
+    else
+        formatDate(&date_buf, std.time.timestamp());
+
+    // Header: .TH "TITLE" "SECTION" "DATE" "SOURCE" "MANUAL"
+    w.print(".TH \"", .{}) catch {};
+    if (header) |h| {
+        if (h.title.len > 0) {
+            writeUpper(w, h.title);
+        } else {
+            writeUpper(w, cmd.name());
+        }
+    } else {
+        writeUpper(w, cmd.name());
+    }
+    w.print("\" \"{s}\" \"{s}\"", .{ section, date_str }) catch {};
+    if (header) |h| {
+        if (h.source.len > 0) w.print(" \"{s}\"", .{h.source}) catch {};
+        if (h.manual.len > 0) w.print(" \"{s}\"", .{h.manual}) catch {};
+    }
+    w.print("\n", .{}) catch {};
+
+    // NAME
+    w.print(".SH NAME\n{s}", .{cmd.commandPath()}) catch {};
+    if (cmd.short.len > 0) {
+        w.print(" \\- {s}", .{util.trimTrailingWhitespaces(cmd.short)}) catch {};
+    }
+    w.print("\n", .{}) catch {};
+
+    // SYNOPSIS
+    if (cmd.runnable() or cmd.hasSubCommands()) {
+        w.print(".SH SYNOPSIS\n", .{}) catch {};
+        if (cmd.runnable()) {
+            w.print("\\fB{s}\\fP\n", .{cmd.useLine()}) catch {};
+        }
+        if (cmd.hasAvailableSubCommands()) {
+            w.print("\\fB{s}\\fP [command]\n", .{cmd.commandPath()}) catch {};
+        }
+    }
+
+    // DESCRIPTION
+    const desc = if (cmd.long.len > 0) cmd.long else cmd.short;
+    if (desc.len > 0) {
+        w.print(".SH DESCRIPTION\n{s}\n", .{util.trimTrailingWhitespaces(desc)}) catch {};
+    }
+
+    // OPTIONS
+    const local = cmd.localFlagsView();
+    if (util.hasAvailableFlags(local)) {
+        w.print(".SH OPTIONS\n", .{}) catch {};
+        writeRoffFlags(w, local);
+    }
+    const inherited = cmd.inheritedFlagsView();
+    if (util.hasAvailableFlags(inherited)) {
+        w.print(".SH OPTIONS INHERITED FROM PARENT COMMANDS\n", .{}) catch {};
+        writeRoffFlags(w, inherited);
+    }
+
+    // EXAMPLE
+    if (cmd.example.len > 0) {
+        w.print(".SH EXAMPLE\n.PP\n.RS\n.nf\n{s}\n.fi\n.RE\n", .{cmd.example}) catch {};
+    }
+
+    // SEE ALSO
+    if (util.hasSeeAlso(cmd)) {
+        w.print(".SH SEE ALSO\n", .{}) catch {};
+        var first = true;
+        if (cmd.parent) |parent| {
+            w.print("\\fB{s}({s})\\fP", .{ parent.commandPath(), section }) catch {};
+            first = false;
+        }
+        for (cmd.getCommands()) |child| {
+            if (!child.isAvailableCommand() and !child.isAdditionalHelpTopicCommand()) continue;
+            if (!first) w.print(", ", .{}) catch {};
+            w.print("\\fB{s}({s})\\fP", .{ child.commandPath(), section }) catch {};
+            first = false;
+        }
+        w.print("\n", .{}) catch {};
+    }
+
+    // HISTORY
+    if (!cmd.disable_auto_gen_tag) {
+        w.print(".SH HISTORY\n.PP\nAuto generated by spf13/cobra\n", .{}) catch {};
+    }
+}
+
+/// Writes flag usage lines in roff (Go: man format uses .PP per flag).
+fn writeRoffFlags(w: *std.Io.Writer, fs: *command_mod.pflag.FlagSet) void {
+    const saved = fs.out_writer;
+    var line_buf: [4096]u8 = undefined;
+    var lw = std.Io.Writer.fixed(&line_buf);
+    fs.out_writer = &lw;
+    fs.printDefaults();
+    fs.out_writer = saved;
+    const text = line_buf[0..lw.end];
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trimRight(u8, line, " \t");
+        if (trimmed.len == 0) continue;
+        w.print(".PP\n{s}\n", .{trimmed}) catch {};
+    }
+}
+
+/// genManTree creates man pages for all commands in the tree (Go: GenManTree).
+pub fn genManTree(gpa: std.mem.Allocator, cmd: *Command, io: std.Io, header: ?*const GenManHeader, dir: []const u8) anyerror!void {
+    const section: []const u8 = if (header) |h| (if (h.section.len > 0) h.section else "1") else "1";
+    var ext_buf: [8]u8 = undefined;
+    var ew = std.Io.Writer.fixed(&ext_buf);
+    ew.print(".{s}", .{section}) catch {};
+
+    var name_buf: [512]u8 = undefined;
+    const basename = util.docFilename(cmd, ext_buf[0..ew.end], &name_buf);
+    var path_buf: [1024]u8 = undefined;
+    var pw = std.Io.Writer.fixed(&path_buf);
+    if (dir.len > 0) {
+        pw.print("{s}", .{dir}) catch {};
+        if (!std.mem.endsWith(u8, dir, "/")) pw.print("/", .{}) catch {};
+    }
+    pw.print("{s}", .{basename}) catch {};
+
+    const file = try std.Io.Dir.cwd().createFile(io, path_buf[0..pw.end], .{});
+    var fbuf: [8192]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(file, io, &fbuf);
+    try genMan(gpa, cmd, io, header, &file_writer.interface);
+    try file_writer.flush();
+    file.close(io);
+
+    for (cmd.getCommands()) |c| {
+        if (!c.isAvailableCommand() and !c.isAdditionalHelpTopicCommand()) continue;
+        try genManTree(gpa, c, io, header, dir);
+    }
 }

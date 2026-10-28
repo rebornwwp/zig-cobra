@@ -9,14 +9,15 @@ const vol = @import("volume.zig");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
+    cobra.setEnviron(init.environ_map);
     var state = types.AppState{};
 
     // Root
     var root_flags = pflag.FlagSet.init(gpa, "dockr");
     defer root_flags.deinit();
     root_flags.stringVarP(&state.config, "config", "c", "/etc/dockr/config.toml", "config file path") catch {};
-    var root_cmd = Command{ .use = "dockr", .short = "A self-sufficient runtime for containers", .long = "dockr is a CLI for managing containers, images, and volumes.\nUse 'dockr COMMAND --help' for more information on a command.", .flags_ptr = &root_flags, .persistent_pre_run = rootPersistentPreRun };
-    root_cmd.iflags = @ptrCast(@alignCast(&state));
+    var root_cmd = Command{ .use = "dockr", .short = "A self-sufficient runtime for containers", .long = "dockr is a CLI for managing containers, images, and volumes.\nUse 'dockr COMMAND --help' for more information on a command.", .pflags = &root_flags, .persistent_pre_run = rootPersistentPreRun };
+    root_cmd.user_data = @ptrCast(@alignCast(&state));
 
     // ── All commands are var in this scope (stack-lifetime) ──
     var ctr_cmd: Command = undefined;
@@ -59,11 +60,13 @@ pub fn main(init: std.process.Init) !void {
     const args_slice = try init.minimal.args.toSlice(alloc);
     const effective_args = if (args_slice.len > 1) args_slice[1..] else &.{};
     root_cmd.setArgs(effective_args);
-    root_cmd.executeWrapper() catch {};
+    root_cmd.executeWrapper(gpa) catch {
+        std.process.exit(1);
+    };
 }
 
 fn rootPersistentPreRun(cmd: *Command, _: [][]const u8) void {
-    const st: *types.AppState = @ptrCast(@alignCast(cmd.root().iflags.?));
+    const st: *types.AppState = @ptrCast(@alignCast(cmd.root().user_data.?));
     const io = @import("std").Io.Threaded.global_single_threaded.*.io();
     var buf: [256]u8 = undefined;
     var stderr_w = std.Io.File.Writer.init(std.Io.File.stderr(), io, &buf);
