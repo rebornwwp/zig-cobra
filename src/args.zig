@@ -18,20 +18,34 @@ pub const PositionalArgs = union(enum) {
     match_all: []const PositionalArgs,
 
     /// Validate positional args against this strategy. Returns error.ArgsCount or error.InvalidArg on failure.
+    /// Failure messages mirror Go's cobra error strings and are staged in cmd.err_msg_buf
+    /// so handleExecError prints the detailed text instead of a bare error name.
     pub fn validate(self: PositionalArgs, cmd: *Command, args: []const []const u8) anyerror!void {
         return switch (self) {
             .simple => |fn_ptr| fn_ptr(cmd, args),
             .exact_n => |n| {
-                if (args.len != n) return error.ArgsCount;
+                if (args.len != n) {
+                    cmd.setErrMsg("accepts {d} arg(s), received {d}", .{ n, args.len });
+                    return error.ArgsCount;
+                }
             },
             .minimum_n => |n| {
-                if (args.len < n) return error.ArgsCount;
+                if (args.len < n) {
+                    cmd.setErrMsg("requires at least {d} arg(s), only received {d}", .{ n, args.len });
+                    return error.ArgsCount;
+                }
             },
             .maximum_n => |n| {
-                if (args.len > n) return error.ArgsCount;
+                if (args.len > n) {
+                    cmd.setErrMsg("accepts at most {d} arg(s), received {d}", .{ n, args.len });
+                    return error.ArgsCount;
+                }
             },
             .range => |r| {
-                if (args.len < r.min or args.len > r.max) return error.ArgsCount;
+                if (args.len < r.min or args.len > r.max) {
+                    cmd.setErrMsg("accepts between {d} and {d} arg(s), received {d}", .{ r.min, r.max, args.len });
+                    return error.ArgsCount;
+                }
             },
             .match_all => |validators| {
                 for (validators) |v| try v.validate(cmd, args);
@@ -41,8 +55,11 @@ pub const PositionalArgs = union(enum) {
 };
 
 fn noArgsInner(cmd: *Command, args: []const []const u8) anyerror!void {
-    _ = cmd;
-    if (args.len > 0) return error.UnknownCommand;
+    if (args.len > 0) {
+        cmd.setErrMsg("unknown command \"{s}\" for \"{s}\"", .{ args[0], cmd.commandPath() });
+        _ = cmd.findSuggestions(args[0]);
+        return error.UnknownCommand;
+    }
 }
 
 fn onlyValidArgsInner(cmd: *Command, args: []const []const u8) anyerror!void {
@@ -55,15 +72,20 @@ fn onlyValidArgsInner(cmd: *Command, args: []const []const u8) anyerror!void {
                 break;
             }
         }
-        if (!found) return error.InvalidArg;
+        if (!found) {
+            cmd.setErrMsg("invalid argument \"{s}\" for \"{s}\"", .{ arg, cmd.commandPath() });
+            return error.InvalidArg;
+        }
     }
 }
 
 fn noDuplicateArgsInner(cmd: *Command, args: []const []const u8) anyerror!void {
-    _ = cmd;
     for (args, 0..) |a, i| {
         for (args[i + 1 ..]) |b| {
-            if (std.mem.eql(u8, a, b)) return error.DuplicateArg;
+            if (std.mem.eql(u8, a, b)) {
+                cmd.setErrMsg("duplicate argument \"{s}\" for \"{s}\"", .{ a, cmd.commandPath() });
+                return error.DuplicateArg;
+            }
         }
     }
 }
@@ -75,7 +97,11 @@ fn arbitraryArgsInner(cmd: *Command, args: []const []const u8) anyerror!void {
 
 fn legacyArgsInner(cmd: *Command, args: []const []const u8) anyerror!void {
     if (!cmd.hasSubCommands()) return;
-    if (!cmd.hasParent() and args.len > 0) return error.UnknownCommand;
+    if (!cmd.hasParent() and args.len > 0) {
+        cmd.setErrMsg("unknown command \"{s}\" for \"{s}\"", .{ args[0], cmd.commandPath() });
+        _ = cmd.findSuggestions(args[0]);
+        return error.UnknownCommand;
+    }
 }
 
 /// Reject any positional args. Returns error.UnknownCommand if args are present.
