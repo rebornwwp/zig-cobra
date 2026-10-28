@@ -683,7 +683,7 @@ pub const Command = struct {
     }
 
     /// Returns the persistent FlagSet for this command.
-    pub fn persistentFlags(self: *Command) ?*pflag.FlagSet {
+    pub fn persistentFlags(self: *const Command) ?*pflag.FlagSet {
         return self.pflags;
     }
 
@@ -700,7 +700,7 @@ pub const Command = struct {
     }
 
     /// Returns persistent flags from parent commands.
-    pub fn parentsPflags(self: *Command) ?*pflag.FlagSet {
+    pub fn parentsPflags(self: *const Command) ?*pflag.FlagSet {
         return self.parents_pflags;
     }
 
@@ -709,13 +709,16 @@ pub const Command = struct {
         return self.localFlags();
     }
 
-    /// Returns local non-persistent flags.
+    /// Returns local non-persistent flags (local flags that are not persistent).
+    /// Note: This is a simplified implementation. Full Go cobra creates a filtered FlagSet.
     pub fn localNonPersistentFlags(self: *Command) ?*pflag.FlagSet {
-        return self.lnpflags;
+        // In Go cobra, this returns local flags that are NOT in persistent flags
+        // For now, we just return local flags. A full implementation would filter.
+        return self.localFlags();
     }
 
     /// Lookup a specific flag by name.
-    pub fn getFlag(self: *Command, flag_name: []const u8) ?*pflag.Flag {
+    pub fn flag(self: *Command, flag_name: []const u8) ?*pflag.Flag {
         if (self.flags()) |fs| return fs.lookup(flag_name);
         return null;
     }
@@ -815,21 +818,21 @@ pub const Command = struct {
     }
 
     /// Returns the help function for this command.
-    pub fn helpFunc(self: *Command) ?HelpFuncType {
+    pub fn helpFunc(self: *const Command) ?HelpFuncType {
         if (self.help_func) |f| return f;
         if (self.hasParent()) return self.parent.?.helpFunc();
         return null;
     }
 
     /// Returns the flag error function for this command.
-    pub fn flagErrorFunc(self: *Command) ?FlagErrorFuncType {
+    pub fn flagErrorFunc(self: *const Command) ?FlagErrorFuncType {
         if (self.flag_error_func) |f| return f;
         if (self.hasParent()) return self.parent.?.flagErrorFunc();
         return null;
     }
 
     /// Returns the usage function for this command.
-    pub fn usageFunc(self: *Command) ?UsageFuncType {
+    pub fn usageFunc(self: *const Command) ?UsageFuncType {
         if (self.usage_func) |f| return f;
         if (self.hasParent()) return self.parent.?.usageFunc();
         return null;

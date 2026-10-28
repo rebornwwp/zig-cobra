@@ -374,9 +374,9 @@ test "inheritedFlags returns null when not set" {
     try std.testing.expect(ifs == null);
 }
 
-test "getFlag returns null for non-existent flag" {
+test "flag lookup returns null for non-existent flag" {
     var cmd = Command{ .use = "root" };
-    const f = cmd.getFlag("nonexistent");
+    const f = cmd.flag("nonexistent");
     try std.testing.expect(f == null);
 }
 
