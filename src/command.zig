@@ -502,6 +502,16 @@ pub const Command = struct {
         }
         self.commands.shrinkRetainingCapacity(write);
         self.commands_are_sorted = false;
+        // Go parity: recompute all display lengths after removal.
+        self.commands_max_use_len = 0;
+        self.commands_max_command_path_len = 0;
+        self.commands_max_name_len = 0;
+        for (self.commands.items) |c| {
+            if (c.use.len > self.commands_max_use_len) self.commands_max_use_len = c.use.len;
+            const cpl = c.commandPath().len;
+            if (cpl > self.commands_max_command_path_len) self.commands_max_command_path_len = cpl;
+            if (c.name().len > self.commands_max_name_len) self.commands_max_name_len = c.name().len;
+        }
     }
 
     pub fn resetCommands(self: *Command, gpa: std.mem.Allocator) void {
@@ -662,7 +672,7 @@ pub const Command = struct {
         if (!self.disable_flag_parsing) {
             // Build merged views (used by validators and help rendering), then parse.
             self.mergePersistentFlags(gpa);
-            self.parseArgs(a) catch |err| {
+            self.parseArgs(gpa, a) catch |err| {
                 if (err == error.Help) {
                     self.printHelp(io);
                     return;
@@ -684,16 +694,23 @@ pub const Command = struct {
             return;
         }
 
-        // --version
+        // --version: our registered flag or a user-provided version flag
         if (self.version.len > 0) {
             const version_requested = self.version_flag_value or
-                (if (self.flags_ptr) |fs| fs.changed(version_flag_name) else false);
+                (if (self.flags_ptr) |fs| (fs.getBool(version_flag_name) catch false) else false);
             if (version_requested) {
                 const w = self.outOrStdout(io);
                 w.print("{s} version {s}\n", .{ self.displayName(), self.version }) catch {};
                 w.flush() catch {};
                 return;
             }
+        }
+
+        // Go parity: non-runnable command invocation prints help and skips
+        // initializers/hooks/validation entirely (Go's execute() returns flag.ErrHelp here).
+        if (!self.runnable()) {
+            self.printHelp(io);
+            return;
         }
 
         @import("cobra.zig").runInitializers();
@@ -736,9 +753,8 @@ pub const Command = struct {
         } else if (self.run) |f| {
             f(self, hook_args);
         } else {
-            // Go parity: non-runnable command invocation prints help without error.
-            self.printHelp(io);
-            return;
+            // Unreachable: the runnable() gate above guarantees run or run_e is set.
+            @panic("cobra: execute() reached dispatch with non-runnable command");
         }
 
         if (self.post_run_e) |f| {
@@ -780,7 +796,10 @@ pub const Command = struct {
         if (!self.silence_usage) self.printUsage(io);
     }
 
-    fn setErrMsg(self: *Command, comptime fmt_str: []const u8, args: anytype) void {
+    /// Stages a detailed error message (Go-style error text) into err_msg_buf.
+    /// handleExecError prefers this over the bare error name. Custom argument
+    /// validators may use it to provide richer messages.
+    pub fn setErrMsg(self: *Command, comptime fmt_str: []const u8, args: anytype) void {
         var w = std.Io.Writer.fixed(&self.err_msg_buf);
         w.print(fmt_str, args) catch {};
         self.err_msg_len = w.end;
@@ -1023,6 +1042,7 @@ pub const Command = struct {
         self.checkCommandGroups();
 
         const found = self.findForExec(gpa, self.args_slice);
+        defer if (found.owned_args) |a| gpa.free(a);
         const cmd = found.cmd;
         if (found.err) |e| {
             if (!cmd.silence_errors) {
@@ -1093,13 +1113,13 @@ pub const Command = struct {
         const usage = self.help_usage_buf[0..usage_w_end];
         if (fs.shorthandLookup('h') == null) {
             fs.boolVarP(&self.help_flag_value, help_flag_name, "h", false, usage) catch {
-                fs.boolVar(&self.help_flag_value, help_flag_name, false, usage) catch {};
+                fs.boolVar(&self.help_flag_value, help_flag_name, false, usage) catch @panic("cobra: failed to register default --help flag");
             };
         } else {
-            fs.boolVar(&self.help_flag_value, help_flag_name, false, usage) catch {};
+            fs.boolVar(&self.help_flag_value, help_flag_name, false, usage) catch @panic("cobra: failed to register default --help flag");
         }
         if (fs.lookup(help_flag_name)) |f| {
-            f.annotations.put(gpa, FlagSetByCobraAnnotation, &.{"true"}) catch {};
+            f.annotations.put(gpa, FlagSetByCobraAnnotation, &.{"true"}) catch @panic("cobra: OOM annotating --help flag");
         }
     }
 
@@ -1118,24 +1138,25 @@ pub const Command = struct {
         const usage = self.version_usage_buf[0..usage_w_end];
         if (fs.shorthandLookup('v') == null) {
             fs.boolVarP(&self.version_flag_value, version_flag_name, "v", false, usage) catch {
-                fs.boolVar(&self.version_flag_value, version_flag_name, false, usage) catch {};
+                fs.boolVar(&self.version_flag_value, version_flag_name, false, usage) catch @panic("cobra: failed to register default --version flag");
             };
         } else {
-            fs.boolVar(&self.version_flag_value, version_flag_name, false, usage) catch {};
+            fs.boolVar(&self.version_flag_value, version_flag_name, false, usage) catch @panic("cobra: failed to register default --version flag");
         }
     }
 
     // ─── Default commands ───
 
     fn trackInternal(self: *Command, gpa: std.mem.Allocator, cmd: *Command) void {
-        self.root().owned_internal_cmds.append(gpa, cmd) catch {};
+        // MUST NOT swallow: an untracked internal command would leak in deinit.
+        self.root().owned_internal_cmds.append(gpa, cmd) catch @panic("cobra: OOM tracking internal command");
     }
 
     /// Creates the default `help` subcommand (Go: InitDefaultHelpCmd).
     pub fn initDefaultHelpCmd(self: *Command, gpa: std.mem.Allocator) void {
         if (!self.hasSubCommands()) return;
         if (self.help_command == null) {
-            const hc = gpa.create(Command) catch return;
+            const hc = gpa.create(Command) catch @panic("cobra: OOM creating help command");
             hc.* = .{
                 .use = "help [command]",
                 .short = "Help about any command",
@@ -1170,6 +1191,7 @@ pub const Command = struct {
         const gpa = exec_state.gpa orelse return error.NoGpaState;
         const r = cmd.root();
         const found = r.find(gpa, args);
+        defer if (found.owned_args) |a| gpa.free(a);
         if (found.err != null) {
             var joined: [256]u8 = undefined;
             var jw = std.Io.Writer.fixed(&joined);
@@ -1198,7 +1220,7 @@ pub const Command = struct {
 
         const have_no_desc_flag = !opts.disable_no_desc_flag and !opts.disable_descriptions;
 
-        const parent = gpa.create(Command) catch return;
+        const parent = gpa.create(Command) catch @panic("cobra: OOM creating completion command");
         parent.* = .{
             .use = completions_mod.completion_command_name,
             .short = "Generate the autocompletion script for the specified shell",
@@ -1220,7 +1242,7 @@ pub const Command = struct {
             .{ .use = "powershell", .short = "Generate the autocompletion script for powershell", .f = completionPowerShellRun, .no_desc_flag = true },
         };
         for (defs) |d| {
-            const c = gpa.create(Command) catch return;
+            const c = gpa.create(Command) catch @panic("cobra: OOM creating completion command");
             c.* = .{
                 .use = d.use,
                 .short = d.short,
@@ -1230,7 +1252,7 @@ pub const Command = struct {
             };
             if (have_no_desc_flag and d.no_desc_flag) {
                 const fs = c.ensureFlags(gpa);
-                fs.boolVar(&c.internal_flag_bool, completions_mod.comp_cmd_no_desc_flag_name, completions_mod.comp_cmd_no_desc_flag_default, completions_mod.comp_cmd_no_desc_flag_desc) catch {};
+                fs.boolVar(&c.internal_flag_bool, completions_mod.comp_cmd_no_desc_flag_name, completions_mod.comp_cmd_no_desc_flag_default, completions_mod.comp_cmd_no_desc_flag_desc) catch @panic("cobra: failed to register completion --no-descriptions flag");
             }
             parent.addCommand(gpa, &.{c});
             self.trackInternal(gpa, c);
@@ -1279,7 +1301,7 @@ pub const Command = struct {
         for (self.commands.items) |c| {
             if (std.mem.eql(u8, c.name(), completions_mod.shell_comp_request_cmd)) return;
         }
-        const complete = gpa.create(Command) catch return;
+        const complete = gpa.create(Command) catch @panic("cobra: OOM creating __complete command");
         complete.* = .{
             .use = completions_mod.shell_comp_request_cmd,
             .aliases = &.{completions_mod.shell_comp_no_desc_request_cmd},
@@ -1361,7 +1383,7 @@ pub const Command = struct {
         var chain: [32]*Command = undefined;
         var n: usize = 0;
         while (p) |cur| {
-            if (n >= chain.len) break;
+            if (n >= chain.len) @panic("cobra: command tree deeper than 32 levels");
             chain[n] = cur;
             n += 1;
             p = cur.parent;
@@ -1757,7 +1779,7 @@ pub const Command = struct {
                             if (act) {
                                 for (names[0..n_names]) |n| {
                                     if (lookupAcross(local_set, inherited, n)) |f| {
-                                        f.annotations.put(local_set.gpa, bash_comp_one_required_flag, &.{"true"}) catch {};
+                                        f.annotations.put(local_set.gpa, bash_comp_one_required_flag, &.{"true"}) catch @panic("cobra: OOM enforcing flag groups for completion");
                                     }
                                 }
                             }
@@ -1784,41 +1806,45 @@ pub const Command = struct {
     // ─── Parsing ───
 
     /// Parses args with inherited persistent flags temporarily merged in (borrowed).
-    pub fn parseArgs(self: *Command, a: []const []const u8) anyerror!void {
+    pub fn parseArgs(self: *Command, gpa: std.mem.Allocator, a: []const []const u8) anyerror!void {
         const fs = self.flags_ptr orelse return;
         fs.error_handling = .continue_on_error;
         fs.parse_errors_allowlist.unknown_flags =
             self.fparse_err_whitelist.unknown_flag or self.fparse_err_whitelist.unknown_shorthand_flag;
 
         // Temporarily borrow own-persistent + ancestor-persistent flags into fs.
-        var borrowed: [128]*pflag.Flag = undefined;
-        var n_borrowed: usize = 0;
+        // Unbounded tracking (gpa-backed): every successfully added flag MUST be
+        // recorded, otherwise it would leak into fs permanently as a dangling pointer.
+        var borrowed: std.ArrayListUnmanaged(*pflag.Flag) = .empty;
         const start_formal = fs.ordered_formal.items.len;
+        defer {
+            removeBorrowedFlags(fs, borrowed.items, start_formal);
+            borrowed.deinit(gpa);
+        }
 
         const borrowFrom = struct {
-            fn inner(dst: *pflag.FlagSet, src: ?*pflag.FlagSet, list: *[128]*pflag.Flag, count: *usize, base: usize) void {
+            fn inner(dst: *pflag.FlagSet, src: ?*pflag.FlagSet, list: *std.ArrayListUnmanaged(*pflag.Flag), alloc: std.mem.Allocator) !void {
                 const s = src orelse return;
                 for (s.ordered_formal.items) |f| {
                     if (dst.lookup(f.name) != null) continue;
                     if (f.shorthand.len > 0) {
                         if (dst.shorthandLookup(f.shorthand[0]) != null) continue;
                     }
-                    dst.addFlag(f) catch continue;
-                    if (count.* >= list.len) continue;
-                    // Only track flags added beyond the command's own set for later removal.
-                    list[count.*] = f;
-                    count.* += 1;
+                    // Track first: if addFlag refuses the flag, roll the tracking back.
+                    try list.append(alloc, f);
+                    dst.addFlag(f) catch {
+                        _ = list.pop();
+                        continue;
+                    };
                 }
-                _ = base;
             }
         }.inner;
-        borrowFrom(fs, self.pflags, &borrowed, &n_borrowed, start_formal);
+        try borrowFrom(fs, self.pflags, &borrowed, gpa);
         // Ancestors' persistent flags
         var p: ?*Command = self.parent;
         while (p) |cur| : (p = cur.parent) {
-            borrowFrom(fs, cur.pflags, &borrowed, &n_borrowed, start_formal);
+            try borrowFrom(fs, cur.pflags, &borrowed, gpa);
         }
-        defer removeBorrowedFlags(fs, borrowed[0..n_borrowed], start_formal);
 
         return fs.parse(a);
     }
@@ -1831,7 +1857,7 @@ pub const Command = struct {
             return;
         }
         self.mergePersistentFlags(gpa);
-        return self.parseArgs(a);
+        return self.parseArgs(gpa, a);
     }
 
     // ─── Command resolution (Go: Find/Traverse) ───
@@ -1842,6 +1868,10 @@ pub const Command = struct {
         err: ?anyerror = null,
         /// First unrecognized positional arg (for error messages/suggestions)
         unknown_arg: []const u8 = "",
+        /// Heap slice backing `args` when find() had to copy during descent (command name
+        /// not at index 0). Caller owns it and must free with the same gpa (null when `args`
+        /// borrows from the input or was produced by traverse()).
+        owned_args: ?[]const []const u8 = null,
     };
 
     /// Strips flags (honoring value-consuming flags) and returns positional args only.
@@ -1875,7 +1905,7 @@ pub const Command = struct {
                 continue;
             }
             if (s.len > 0) {
-                out.append(gpa, s) catch {};
+                out.append(gpa, s) catch @panic("cobra: OOM in stripFlags");
             }
         }
     }
@@ -1893,6 +1923,9 @@ pub const Command = struct {
         self.mergePersistentFlags(gpa);
         var cmd: *Command = self;
         var remaining: []const []const u8 = args;
+        // Ownership of the argsMinusFirstX copy (if any). Intermediate copies are freed as
+        // we descend; the final one is handed to the caller via FindResult.owned_args.
+        var owned_remaining: ?[]const []const u8 = null;
 
         var positional: std.ArrayListUnmanaged([]const u8) = .empty;
         defer positional.deinit(gpa);
@@ -1903,7 +1936,10 @@ pub const Command = struct {
             if (positional.items.len == 0) break;
             const next_name = positional.items[0];
             const next = cmd.findNext(next_name) orelse break;
-            remaining = argsMinusFirstX(gpa, remaining, next_name) orelse break;
+            const minus = argsMinusFirstX(gpa, remaining, next_name) orelse break;
+            if (owned_remaining) |a| gpa.free(a);
+            remaining = minus.args;
+            owned_remaining = minus.owned;
             cmd = next;
         }
 
@@ -1912,10 +1948,10 @@ pub const Command = struct {
             positional.clearRetainingCapacity();
             cmd.stripFlags(remaining, &positional, gpa);
             if (cmd.hasSubCommands() and !cmd.hasParent() and positional.items.len > 0) {
-                return .{ .cmd = cmd, .args = remaining, .err = error.UnknownCommand, .unknown_arg = positional.items[0] };
+                return .{ .cmd = cmd, .args = remaining, .err = error.UnknownCommand, .unknown_arg = positional.items[0], .owned_args = owned_remaining };
             }
         }
-        return .{ .cmd = cmd, .args = remaining, .err = null };
+        return .{ .cmd = cmd, .args = remaining, .err = null, .owned_args = owned_remaining };
     }
 
     pub fn findNext(self: *Command, next_name: []const u8) ?*Command {
@@ -1927,22 +1963,21 @@ pub const Command = struct {
             }
         }
         if (@import("cobra.zig").enable_prefix_matching) {
-            var matches: [2]*Command = undefined;
+            // Go parity: hidden/deprecated commands still participate in prefix matching.
+            var match: ?*Command = null;
             var n: usize = 0;
             for (self.commands.items) |c| {
-                if (c.hidden or c.deprecated.len > 0) continue;
                 if (c.hasNameOrAliasPrefix(next_name)) {
-                    if (n >= 2) {
-                        n += 1;
-                        break;
-                    }
-                    matches[n] = c;
                     n += 1;
+                    if (n == 1) match = c;
+                    if (n > 1) break; // ambiguous prefix → no match (Go: len(matches) != 1)
                 }
             }
             if (n == 1) {
-                matches[0].command_called_as = .{ .name = next_name, .called = true };
-                return matches[0];
+                if (match) |m| {
+                    m.command_called_as = .{ .name = next_name, .called = true };
+                    return m;
+                }
             }
         }
         return null;
@@ -2088,10 +2123,13 @@ pub const Command = struct {
             const vals = try gpa.alloc([]const u8, existing.len + 1);
             @memcpy(vals[0..existing.len], existing);
             vals[existing.len] = key;
-            fs.setAnnotation(n, annotation, vals) catch return error.NoSuchFlag;
-            self.owned_annotation_values.append(gpa, vals) catch {};
+            fs.setAnnotation(n, annotation, vals) catch {
+                gpa.free(vals);
+                return error.NoSuchFlag;
+            };
+            try self.owned_annotation_values.append(gpa, vals);
         }
-        self.owned_group_keys.append(gpa, key) catch {};
+        try self.owned_group_keys.append(gpa, key);
     }
 
     pub fn markFlagsMutuallyExclusive(self: *Command, gpa: std.mem.Allocator, flag_names: []const []const u8) anyerror!void {
@@ -2187,14 +2225,17 @@ fn clearBorrowed(fs_opt: *?pflag.FlagSet) void {
 
 /// Copy of args with the first occurrence of x removed. Returned slice may reference a
 /// gpa allocation (caller-scoped); the common index-0 case allocates nothing.
-fn argsMinusFirstX(gpa: std.mem.Allocator, args: []const []const u8, x: []const u8) ?[]const []const u8 {
+/// Returns `args` with the first element equal to `x` removed. When `x` is not at
+/// index 0 a copy is allocated; `owned` then reports the allocation so callers can
+/// free it (null when the result borrows from `args`).
+fn argsMinusFirstX(gpa: std.mem.Allocator, args: []const []const u8, x: []const u8) ?struct { args: []const []const u8, owned: ?[]const []const u8 } {
     for (args, 0..) |arg, i| {
         if (std.mem.eql(u8, arg, x)) {
-            if (i == 0) return args[1..];
+            if (i == 0) return .{ .args = args[1..], .owned = null };
             const out = gpa.alloc(@TypeOf(args[0]), args.len - 1) catch return null;
             @memcpy(out[0..i], args[0..i]);
             @memcpy(out[i..], args[i + 1 ..]);
-            return out;
+            return .{ .args = out, .owned = out };
         }
     }
     return null;

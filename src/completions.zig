@@ -404,7 +404,10 @@ pub fn getCompletions(root_self: *Command, io: std.Io, gpa: std.mem.Allocator, a
     var directive: ShellCompDirective = .default;
 
     // Find the real command for which completion is requested.
+    // NOTE: find() persists flag views via `gpa` (must outlive the arena), so scratch
+    // ownership comes back in found.owned_args and is freed explicitly here.
     const found = if (root.traverse_children) root.traverse(gpa, trimmed_args) else root.find(gpa, trimmed_args);
+    defer if (found.owned_args) |a| gpa.free(a);
     const final_cmd = found.cmd;
     var final_args = found.args;
     if (found.err != null) {
@@ -430,9 +433,9 @@ pub fn getCompletions(root_self: *Command, io: std.Io, gpa: std.mem.Allocator, a
         const with_dash = try aa.alloc([]const u8, final_args.len + 1);
         @memcpy(with_dash[0..final_args.len], final_args);
         with_dash[final_args.len] = "--";
-        final_cmd.parseArgs(with_dash) catch {};
+        final_cmd.parseArgs(aa, with_dash) catch {};
         const new_arg_count = fs.nArg();
-        final_cmd.parseArgs(final_args) catch {
+        final_cmd.parseArgs(aa, final_args) catch {
             compErrorln(io, "error while parsing flags");
             printCompletions(io, final_cmd, root_name, &.{}, .default, !include_desc);
             return;
