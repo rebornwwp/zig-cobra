@@ -138,27 +138,31 @@ pub fn rpad(gpa: std.mem.Allocator, s: []const u8, padding: usize) ![]const u8 {
     return result;
 }
 
+/// Maximum string length considered by levenshteinDistance (inputs are clamped to this).
+pub const max_levenshtein_len = 1024;
+
 /// Compute the Levenshtein edit distance between two strings. When ignore_case is true, comparison is case-insensitive.
+/// Uses two rolling rows (O(len) stack, ~16 KiB) instead of a full matrix. Inputs longer than
+/// max_levenshtein_len are clamped — distances for longer strings are only used for ranking
+/// suggestions, so clamping is safe and prevents unbounded stack growth / OOB writes.
 pub fn levenshteinDistance(s: []const u8, t: []const u8, ignore_case: bool) usize {
-    var s_buf: [1024]u8 = undefined;
-    var t_buf: [1024]u8 = undefined;
-    const sn = if (ignore_case) blk: {
-        _ = std.ascii.lowerString(&s_buf, s);
-        break :blk s_buf[0..s.len];
-    } else s;
-    const tn = if (ignore_case) blk: {
-        _ = std.ascii.lowerString(&t_buf, t);
-        break :blk t_buf[0..t.len];
-    } else t;
+    const sn = s[0..@min(s.len, max_levenshtein_len)];
+    const tn = t[0..@min(t.len, max_levenshtein_len)];
     const n = sn.len;
     const m = tn.len;
-    var d: [1025][1025]usize = undefined;
-    for (0..n + 1) |i| d[i][0] = i;
-    for (0..m + 1) |j| d[0][j] = j;
-    for (1..n + 1) |i| for (1..m + 1) |j| {
-        d[i][j] = if (sn[i - 1] == tn[j - 1]) d[i - 1][j - 1] else @min(@min(d[i - 1][j], d[i][j - 1]), d[i - 1][j - 1]) + 1;
-    };
-    return d[n][m];
+    var prev: [max_levenshtein_len + 1]usize = undefined;
+    var cur: [max_levenshtein_len + 1]usize = undefined;
+    for (0..m + 1) |j| prev[j] = j;
+    for (1..n + 1) |i| {
+        cur[0] = i;
+        const si = if (ignore_case) std.ascii.toLower(sn[i - 1]) else sn[i - 1];
+        for (1..m + 1) |j| {
+            const tj = if (ignore_case) std.ascii.toLower(tn[j - 1]) else tn[j - 1];
+            cur[j] = if (si == tj) prev[j - 1] else @min(@min(prev[j], cur[j - 1]), prev[j - 1]) + 1;
+        }
+        @memcpy(prev[0 .. m + 1], cur[0 .. m + 1]);
+    }
+    return prev[m];
 }
 
 /// Check if needle exists in haystack slice (exact match).
