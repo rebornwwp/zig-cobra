@@ -33,3 +33,6 @@ jobs:
 
       - name: Check build
         run: zig build --summary all
+
+      - name: Smoke test examples
+        run: ./scripts/smoke.sh
