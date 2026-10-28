@@ -80,6 +80,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "active_help_test", .path = "src/active_help_test.zig" },
         .{ .name = "flag_groups_test", .path = "src/flag_groups_test.zig" },
         .{ .name = "behavior_test", .path = "src/behavior_test.zig" },
+        .{ .name = "doc_test", .path = "src/doc_test.zig" },
     };
 
     const test_step = b.step("test", "Run library tests");

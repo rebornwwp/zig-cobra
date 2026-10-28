@@ -16,7 +16,7 @@ pub const GenManHeader = struct {
 const month_names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
 /// Formats a unix timestamp as "Mon DD, YYYY" (Go: time.Now().Format("Jan 02, 2006")).
-fn formatDate(buf: []u8, unix_secs: i64) []const u8 {
+fn formatDate(buf: []u8, unix_secs: i64) anyerror![]const u8 {
     const days: i64 = @divFloor(unix_secs, 86400);
     // Civil-from-days algorithm (Howard Hinnant).
     const z = days + 719468;
@@ -30,115 +30,117 @@ fn formatDate(buf: []u8, unix_secs: i64) []const u8 {
     const m: u64 = if (mp < 10) mp + 3 else mp - 9;
     if (m <= 2) y += 1;
     var w = std.Io.Writer.fixed(buf);
-    w.print("{s} {d:0>2}, {d}", .{ month_names[m - 1], d, y }) catch {};
+    try w.print("{s} {d:0>2}, {d}", .{ month_names[m - 1], d, y });
     return buf[0..w.end];
 }
 
-fn writeUpper(w: *std.Io.Writer, s: []const u8) void {
+fn writeUpper(w: *std.Io.Writer, s: []const u8) anyerror!void {
     for (s) |c| {
-        w.print("{c}", .{std.ascii.toUpper(c)}) catch {};
+        try w.print("{c}", .{std.ascii.toUpper(c)});
     }
 }
 
 /// genMan creates a man page for cmd (Go: GenMan).
 pub fn genMan(gpa: std.mem.Allocator, cmd: *Command, io: std.Io, header: ?*const GenManHeader, w: *std.Io.Writer) anyerror!void {
-    _ = io;
     cmd.initDefaultHelpCmd(gpa);
     cmd.initDefaultHelpFlag(gpa);
     cmd.mergePersistentFlags(gpa);
 
     const section: []const u8 = if (header) |h| (if (h.section.len > 0) h.section else "1") else "1";
 
+    // std.time.timestamp() was removed in Zig 0.17; use the wall clock via Io.
+    const now_secs: i64 = @intCast(@divTrunc(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s));
     var date_buf: [32]u8 = undefined;
     const date_str = if (header) |h|
-        (if (h.date) |d| formatDate(&date_buf, d) else formatDate(&date_buf, std.time.timestamp()))
+        (if (h.date) |d| try formatDate(&date_buf, d) else try formatDate(&date_buf, now_secs))
     else
-        formatDate(&date_buf, std.time.timestamp());
+        try formatDate(&date_buf, now_secs);
 
     // Header: .TH "TITLE" "SECTION" "DATE" "SOURCE" "MANUAL"
-    w.print(".TH \"", .{}) catch {};
+    try w.print(".TH \"", .{});
     if (header) |h| {
         if (h.title.len > 0) {
-            writeUpper(w, h.title);
+            try writeUpper(w, h.title);
         } else {
-            writeUpper(w, cmd.name());
+            try writeUpper(w, cmd.name());
         }
     } else {
-        writeUpper(w, cmd.name());
+        try writeUpper(w, cmd.name());
     }
-    w.print("\" \"{s}\" \"{s}\"", .{ section, date_str }) catch {};
+    try w.print("\" \"{s}\" \"{s}\"", .{ section, date_str });
     if (header) |h| {
-        if (h.source.len > 0) w.print(" \"{s}\"", .{h.source}) catch {};
-        if (h.manual.len > 0) w.print(" \"{s}\"", .{h.manual}) catch {};
+        try if (h.source.len > 0) w.print(" \"{s}\"", .{h.source});
+        try if (h.manual.len > 0) w.print(" \"{s}\"", .{h.manual});
     }
-    w.print("\n", .{}) catch {};
+    try w.print("\n", .{});
 
     // NAME
-    w.print(".SH NAME\n{s}", .{cmd.commandPath()}) catch {};
+    try w.print(".SH NAME\n{s}", .{cmd.commandPath()});
     if (cmd.short.len > 0) {
-        w.print(" \\- {s}", .{util.trimTrailingWhitespaces(cmd.short)}) catch {};
+        try w.print(" \\- {s}", .{util.trimTrailingWhitespaces(cmd.short)});
     }
-    w.print("\n", .{}) catch {};
+    try w.print("\n", .{});
 
     // SYNOPSIS
     if (cmd.runnable() or cmd.hasSubCommands()) {
-        w.print(".SH SYNOPSIS\n", .{}) catch {};
+        try w.print(".SH SYNOPSIS\n", .{});
         if (cmd.runnable()) {
-            w.print("\\fB{s}\\fP\n", .{cmd.useLine()}) catch {};
+            try w.print("\\fB{s}\\fP\n", .{cmd.useLine()});
         }
         if (cmd.hasAvailableSubCommands()) {
-            w.print("\\fB{s}\\fP [command]\n", .{cmd.commandPath()}) catch {};
+            try w.print("\\fB{s}\\fP [command]\n", .{cmd.commandPath()});
         }
     }
 
     // DESCRIPTION
     const desc = if (cmd.long.len > 0) cmd.long else cmd.short;
     if (desc.len > 0) {
-        w.print(".SH DESCRIPTION\n{s}\n", .{util.trimTrailingWhitespaces(desc)}) catch {};
+        try w.print(".SH DESCRIPTION\n{s}\n", .{util.trimTrailingWhitespaces(desc)});
     }
 
     // OPTIONS
     const local = cmd.localFlagsView();
     if (util.hasAvailableFlags(local)) {
-        w.print(".SH OPTIONS\n", .{}) catch {};
-        writeRoffFlags(w, local);
+        try w.print(".SH OPTIONS\n", .{});
+        try writeRoffFlags(w, local);
     }
     const inherited = cmd.inheritedFlagsView();
     if (util.hasAvailableFlags(inherited)) {
-        w.print(".SH OPTIONS INHERITED FROM PARENT COMMANDS\n", .{}) catch {};
-        writeRoffFlags(w, inherited);
+        try w.print(".SH OPTIONS INHERITED FROM PARENT COMMANDS\n", .{});
+        try writeRoffFlags(w, inherited);
     }
 
     // EXAMPLE
     if (cmd.example.len > 0) {
-        w.print(".SH EXAMPLE\n.PP\n.RS\n.nf\n{s}\n.fi\n.RE\n", .{cmd.example}) catch {};
+        try w.print(".SH EXAMPLE\n.PP\n.RS\n.nf\n{s}\n.fi\n.RE\n", .{cmd.example});
     }
 
     // SEE ALSO
     if (util.hasSeeAlso(cmd)) {
-        w.print(".SH SEE ALSO\n", .{}) catch {};
+        try w.print(".SH SEE ALSO\n", .{});
         var first = true;
         if (cmd.parent) |parent| {
-            w.print("\\fB{s}({s})\\fP", .{ parent.commandPath(), section }) catch {};
+            try w.print("\\fB{s}({s})\\fP", .{ parent.commandPath(), section });
             first = false;
         }
         for (cmd.getCommands()) |child| {
             if (!child.isAvailableCommand() and !child.isAdditionalHelpTopicCommand()) continue;
-            if (!first) w.print(", ", .{}) catch {};
-            w.print("\\fB{s}({s})\\fP", .{ child.commandPath(), section }) catch {};
+            try if (!first) w.print(", ", .{});
+            try w.print("\\fB{s}({s})\\fP", .{ child.commandPath(), section });
             first = false;
         }
-        w.print("\n", .{}) catch {};
+        try w.print("\n", .{});
     }
 
     // HISTORY
     if (!cmd.disable_auto_gen_tag) {
-        w.print(".SH HISTORY\n.PP\nAuto generated by spf13/cobra\n", .{}) catch {};
+        try w.print(".SH HISTORY\n.PP\nAuto generated by spf13/cobra\n", .{});
     }
 }
 
 /// Writes flag usage lines in roff (Go: man format uses .PP per flag).
-fn writeRoffFlags(w: *std.Io.Writer, fs: *command_mod.pflag.FlagSet) void {
+fn writeRoffFlags(w: *std.Io.Writer, maybe_fs: ?*command_mod.pflag.FlagSet) anyerror!void {
+    const fs = maybe_fs orelse return;
     const saved = fs.out_writer;
     var line_buf: [4096]u8 = undefined;
     var lw = std.Io.Writer.fixed(&line_buf);
@@ -148,9 +150,9 @@ fn writeRoffFlags(w: *std.Io.Writer, fs: *command_mod.pflag.FlagSet) void {
     const text = line_buf[0..lw.end];
     var it = std.mem.splitScalar(u8, text, '\n');
     while (it.next()) |line| {
-        const trimmed = std.mem.trimRight(u8, line, " \t");
+        const trimmed = util.trimTrailingWhitespaces(line);
         if (trimmed.len == 0) continue;
-        w.print(".PP\n{s}\n", .{trimmed}) catch {};
+        try w.print(".PP\n{s}\n", .{trimmed});
     }
 }
 
@@ -159,17 +161,17 @@ pub fn genManTree(gpa: std.mem.Allocator, cmd: *Command, io: std.Io, header: ?*c
     const section: []const u8 = if (header) |h| (if (h.section.len > 0) h.section else "1") else "1";
     var ext_buf: [8]u8 = undefined;
     var ew = std.Io.Writer.fixed(&ext_buf);
-    ew.print(".{s}", .{section}) catch {};
+    try ew.print(".{s}", .{section});
 
     var name_buf: [512]u8 = undefined;
     const basename = util.docFilename(cmd, ext_buf[0..ew.end], &name_buf);
     var path_buf: [1024]u8 = undefined;
     var pw = std.Io.Writer.fixed(&path_buf);
     if (dir.len > 0) {
-        pw.print("{s}", .{dir}) catch {};
-        if (!std.mem.endsWith(u8, dir, "/")) pw.print("/", .{}) catch {};
+        try pw.print("{s}", .{dir});
+        if (!std.mem.endsWith(u8, dir, "/")) try pw.print("/", .{});
     }
-    pw.print("{s}", .{basename}) catch {};
+    try pw.print("{s}", .{basename});
 
     const file = try std.Io.Dir.cwd().createFile(io, path_buf[0..pw.end], .{});
     var fbuf: [8192]u8 = undefined;

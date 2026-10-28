@@ -5,17 +5,17 @@ const Command = command_mod.Command;
 const util = @import("util.zig");
 
 /// Default ReST link format (Go: defaultLinkHandler).
-fn defaultLinkHandler(w: *std.Io.Writer, name: []const u8, ref: []const u8) void {
-    w.print("`{s} <{s}.rst>`_", .{ name, ref }) catch {};
+fn defaultLinkHandler(w: *std.Io.Writer, name: []const u8, ref: []const u8) anyerror!void {
+    try w.print("`{s} <{s}.rst>`_", .{ name, ref });
 }
 
-fn printRestOptions(w: *std.Io.Writer, header: []const u8, fs: ?*command_mod.pflag.FlagSet) void {
+fn printRestOptions(w: *std.Io.Writer, header: []const u8, fs: ?*command_mod.pflag.FlagSet) anyerror!void {
     const f = fs orelse return;
     if (!util.hasAvailableFlags(f)) return;
-    w.print("{s}\n", .{header}) catch {};
+    try w.print("{s}\n", .{header});
     var i: usize = 0;
-    while (i < header.len) : (i += 1) w.print("~", .{}) catch {};
-    w.print("\n\n::\n\n", .{}) catch {};
+    while (i < header.len) : (i += 1) try w.print("~", .{});
+    try w.print("\n\n::\n\n", .{});
     const saved = f.out_writer;
     var line_buf: [4096]u8 = undefined;
     var lw = std.Io.Writer.fixed(&line_buf);
@@ -25,11 +25,11 @@ fn printRestOptions(w: *std.Io.Writer, header: []const u8, fs: ?*command_mod.pfl
     const text = line_buf[0..lw.end];
     var it = std.mem.splitScalar(u8, text, '\n');
     while (it.next()) |line| {
-        const trimmed = std.mem.trimRight(u8, line, " \t");
+        const trimmed = util.trimTrailingWhitespaces(line);
         if (trimmed.len == 0) continue;
-        w.print("    {s}\n", .{trimmed}) catch {};
+        try w.print("    {s}\n", .{trimmed});
     }
-    w.print("\n", .{}) catch {};
+    try w.print("\n", .{});
 }
 
 /// genReST creates reStructured Text output (Go: GenReST).
@@ -41,65 +41,65 @@ pub fn genReST(gpa: std.mem.Allocator, cmd: *Command, io: std.Io, w: *std.Io.Wri
 
     const ref = cmd.commandPath();
     // Title
-    w.print("{s}\n", .{ref}) catch {};
+    try w.print("{s}\n", .{ref});
     var i: usize = 0;
-    while (i < ref.len) : (i += 1) w.print("-", .{}) catch {};
-    w.print("\n\n", .{}) catch {};
+    while (i < ref.len) : (i += 1) try w.print("-", .{});
+    try w.print("\n\n", .{});
 
     if (cmd.short.len > 0) {
-        w.print("{s}\n\n", .{util.trimTrailingWhitespaces(cmd.short)}) catch {};
+        try w.print("{s}\n\n", .{util.trimTrailingWhitespaces(cmd.short)});
     }
 
     // Synopsis
     if (cmd.runnable() or cmd.hasSubCommands()) {
-        w.print("Synopsis\n--------\n\n", .{}) catch {};
+        try w.print("Synopsis\n--------\n\n", .{});
         if (cmd.long.len > 0) {
-            w.print("{s}\n\n", .{util.trimTrailingWhitespaces(cmd.long)}) catch {};
+            try w.print("{s}\n\n", .{util.trimTrailingWhitespaces(cmd.long)});
         }
         if (cmd.runnable()) {
-            w.print("::\n\n    {s}\n\n", .{cmd.useLine()}) catch {};
+            try w.print("::\n\n    {s}\n\n", .{cmd.useLine()});
         }
         if (cmd.hasAvailableSubCommands()) {
-            w.print("::\n\n    {s} [command]\n\n", .{cmd.commandPath()}) catch {};
+            try w.print("::\n\n    {s} [command]\n\n", .{cmd.commandPath()});
         }
     }
 
     if (cmd.example.len > 0) {
-        w.print("Examples\n--------\n\n::\n\n", .{}) catch {};
+        try w.print("Examples\n--------\n\n::\n\n", .{});
         var it = std.mem.splitScalar(u8, cmd.example, '\n');
         while (it.next()) |line| {
-            w.print("    {s}\n", .{line}) catch {};
+            try w.print("    {s}\n", .{line});
         }
-        w.print("\n", .{}) catch {};
+        try w.print("\n", .{});
     }
 
     // Options
-    printRestOptions(w, "Options", cmd.localFlagsView());
-    printRestOptions(w, "Options inherited from parent commands", cmd.inheritedFlagsView());
+    try printRestOptions(w, "Options", cmd.localFlagsView());
+    try printRestOptions(w, "Options inherited from parent commands", cmd.inheritedFlagsView());
 
     // SEE ALSO
     if (util.hasSeeAlso(cmd)) {
-        w.print("SEE ALSO\n--------\n\n", .{}) catch {};
+        try w.print("SEE ALSO\n--------\n\n", .{});
         var first = true;
         if (cmd.parent) |parent| {
             var buf: [512]u8 = undefined;
             const parent_ref = util.docFilenameSansExt(parent, &buf);
-            defaultLinkHandler(w, parent.commandPath(), parent_ref);
+            try defaultLinkHandler(w, parent.commandPath(), parent_ref);
             first = false;
         }
         for (cmd.getCommands()) |child| {
             if (!child.isAvailableCommand() and !child.isAdditionalHelpTopicCommand()) continue;
-            if (!first) w.print(", ", .{}) catch {};
+            try if (!first) w.print(", ", .{});
             var buf: [512]u8 = undefined;
             const child_ref = util.docFilenameSansExt(child, &buf);
-            defaultLinkHandler(w, child.commandPath(), child_ref);
+            try defaultLinkHandler(w, child.commandPath(), child_ref);
             first = false;
         }
-        w.print("\n\n", .{}) catch {};
+        try w.print("\n\n", .{});
     }
 
     if (!cmd.disable_auto_gen_tag) {
-        w.print(".. Generated by spf13/cobra\n", .{}) catch {};
+        try w.print(".. Generated by spf13/cobra\n", .{});
     }
 }
 
@@ -120,10 +120,10 @@ pub fn genReSTTree(gpa: std.mem.Allocator, cmd: *Command, io: std.Io, dir: []con
     var path_buf: [1024]u8 = undefined;
     var pw = std.Io.Writer.fixed(&path_buf);
     if (dir.len > 0) {
-        pw.print("{s}", .{dir}) catch {};
-        if (!std.mem.endsWith(u8, dir, "/")) pw.print("/", .{}) catch {};
+        try pw.print("{s}", .{dir});
+        if (!std.mem.endsWith(u8, dir, "/")) try pw.print("/", .{});
     }
-    pw.print("{s}", .{basename}) catch {};
+    try pw.print("{s}", .{basename});
 
     const file = try std.Io.Dir.cwd().createFile(io, path_buf[0..pw.end], .{});
     var fbuf: [8192]u8 = undefined;

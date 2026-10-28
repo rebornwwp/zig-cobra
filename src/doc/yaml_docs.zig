@@ -4,41 +4,41 @@ const command_mod = @import("../command.zig");
 const Command = command_mod.Command;
 const util = @import("util.zig");
 
-fn yamlQuote(w: *std.Io.Writer, s: []const u8) void {
-    w.print("\"", .{}) catch {};
+fn yamlQuote(w: *std.Io.Writer, s: []const u8) anyerror!void {
+    try w.print("\"", .{});
     for (s) |c| {
         switch (c) {
-            '"' => w.print("\\\"", .{}) catch {},
-            '\\' => w.print("\\\\", .{}) catch {},
-            '\n' => w.print("\\n", .{}) catch {},
-            '\r' => w.print("\\r", .{}) catch {},
-            '\t' => w.print("\\t", .{}) catch {},
-            else => w.print("{c}", .{c}) catch {},
+            '"' => try w.print("\\\"", .{}),
+            '\\' => try w.print("\\\\", .{}),
+            '\n' => try w.print("\\n", .{}),
+            '\r' => try w.print("\\r", .{}),
+            '\t' => try w.print("\\t", .{}),
+            else => try w.print("{c}", .{c}),
         }
     }
-    w.print("\"", .{}) catch {};
+    try w.print("\"", .{});
 }
 
-fn printFlagOptions(w: *std.Io.Writer, header: []const u8, fs: ?*command_mod.pflag.FlagSet) void {
+fn printFlagOptions(w: *std.Io.Writer, header: []const u8, fs: ?*command_mod.pflag.FlagSet) anyerror!void {
     const f = fs orelse return;
     if (!util.hasAvailableFlags(f)) return;
-    w.print("{s}:\n", .{header}) catch {};
+    try w.print("{s}:\n", .{header});
     for (f.ordered_formal.items) |flag| {
         if (flag.hidden) continue;
-        w.print("    - name: {s}\n", .{flag.name}) catch {};
+        try w.print("    - name: {s}\n", .{flag.name});
         if (flag.shorthand.len > 0) {
-            w.print("      shorthand: ", .{}) catch {};
-            yamlQuote(w, flag.shorthand);
-            w.print("\n", .{}) catch {};
+            try w.print("      shorthand: ", .{});
+            try yamlQuote(w, flag.shorthand);
+            try w.print("\n", .{});
         }
         if (flag.usage.len > 0) {
-            w.print("      usage: ", .{}) catch {};
-            yamlQuote(w, flag.usage);
-            w.print("\n", .{}) catch {};
+            try w.print("      usage: ", .{});
+            try yamlQuote(w, flag.usage);
+            try w.print("\n", .{});
         }
-        w.print("      default_value: ", .{}) catch {};
-        yamlQuote(w, flag.def_value);
-        w.print("\n", .{}) catch {};
+        try w.print("      default_value: ", .{});
+        try yamlQuote(w, flag.def_value);
+        try w.print("\n", .{});
     }
 }
 
@@ -62,31 +62,31 @@ pub fn genYamlCustom(
     cmd.initDefaultHelpFlag(gpa);
     cmd.mergePersistentFlags(gpa);
 
-    w.print("name: {s}\n", .{cmd.commandPath()}) catch {};
+    try w.print("name: {s}\n", .{cmd.commandPath()});
 
     if (cmd.short.len > 0) {
-        w.print("synopsis: ", .{}) catch {};
-        yamlQuote(w, util.trimTrailingWhitespaces(cmd.short));
-        w.print("\n", .{}) catch {};
+        try w.print("synopsis: ", .{});
+        try yamlQuote(w, util.trimTrailingWhitespaces(cmd.short));
+        try w.print("\n", .{});
     }
     if (cmd.long.len > 0) {
-        w.print("description: ", .{}) catch {};
-        yamlQuote(w, util.trimTrailingWhitespaces(cmd.long));
-        w.print("\n", .{}) catch {};
+        try w.print("description: ", .{});
+        try yamlQuote(w, util.trimTrailingWhitespaces(cmd.long));
+        try w.print("\n", .{});
     }
     if (cmd.runnable()) {
-        w.print("usage: ", .{}) catch {};
-        yamlQuote(w, cmd.useLine());
-        w.print("\n", .{}) catch {};
+        try w.print("usage: ", .{});
+        try yamlQuote(w, cmd.useLine());
+        try w.print("\n", .{});
     }
 
-    printFlagOptions(w, "options", cmd.localFlagsView());
-    printFlagOptions(w, "inherited_options", cmd.inheritedFlagsView());
+    try printFlagOptions(w, "options", cmd.localFlagsView());
+    try printFlagOptions(w, "inherited_options", cmd.inheritedFlagsView());
 
     if (cmd.example.len > 0) {
-        w.print("example: ", .{}) catch {};
-        yamlQuote(w, cmd.example);
-        w.print("\n", .{}) catch {};
+        try w.print("example: ", .{});
+        try yamlQuote(w, cmd.example);
+        try w.print("\n", .{});
     }
 
     // SEE ALSO
@@ -100,17 +100,17 @@ pub fn genYamlCustom(
         }
     }
     if (has_also) {
-        w.print("see_also:\n", .{}) catch {};
+        try w.print("see_also:\n", .{});
         if (cmd.parent) |parent| {
-            w.print("    - ", .{}) catch {};
-            yamlQuote(w, parent.commandPath());
-            w.print("\n", .{}) catch {};
+            try w.print("    - ", .{});
+            try yamlQuote(w, parent.commandPath());
+            try w.print("\n", .{});
         }
         for (cmd.getCommands()) |child| {
             if (!child.isAvailableCommand() and !child.isAdditionalHelpTopicCommand()) continue;
-            w.print("    - ", .{}) catch {};
-            yamlQuote(w, child.commandPath());
-            w.print("\n", .{}) catch {};
+            try w.print("    - ", .{});
+            try yamlQuote(w, child.commandPath());
+            try w.print("\n", .{});
         }
     }
 }
@@ -127,10 +127,10 @@ pub fn genYamlTree(gpa: std.mem.Allocator, cmd: *Command, io: std.Io, dir: []con
     var path_buf: [1024]u8 = undefined;
     var pw = std.Io.Writer.fixed(&path_buf);
     if (dir.len > 0) {
-        pw.print("{s}", .{dir}) catch {};
-        if (!std.mem.endsWith(u8, dir, "/")) pw.print("/", .{}) catch {};
+        try pw.print("{s}", .{dir});
+        if (!std.mem.endsWith(u8, dir, "/")) try pw.print("/", .{});
     }
-    pw.print("{s}", .{basename}) catch {};
+    try pw.print("{s}", .{basename});
 
     const file = try std.Io.Dir.cwd().createFile(io, path_buf[0..pw.end], .{});
     var fbuf: [8192]u8 = undefined;
