@@ -11,7 +11,7 @@ licensed under the Apache License 2.0 that covers this project.
 zig build test           # Run 83 tests
 zig build run-demo       # Run simple demo
 zig build run-dockr      # Run Docker-style demo  
-zig fmt src/ dockr/ demo/
+zig fmt src/ examples/
 ```
 
 ## Code Style
