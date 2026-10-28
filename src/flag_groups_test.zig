@@ -14,7 +14,7 @@ fn setupGroupCmd(fs: *pflag.FlagSet) Command {
         .use = "test",
         .run = emptyRun,
         .flags_ptr = fs,
-        .silence_errors = true,
+        .silence_errors = false, // keep error output so violations can be asserted on captured output
         .silence_usage = true,
     };
 }
@@ -45,7 +45,7 @@ test "required together: partial set violates" {
 
     const out = try TestHelper.executeCommand(gpa, &cmd, &.{"--alpha"});
     try std.testing.expectEqual(error.FlagGroupViolation, out.err.?);
-    TestHelper.checkStringContains(cmd.err_msg_buf[0..cmd.err_msg_len], "must all be set");
+    try TestHelper.checkStringContains(out.output, "must all be set");
 }
 
 test "required together: both set passes" {
@@ -78,7 +78,7 @@ test "one required: none set violates" {
 
     const out = try TestHelper.executeCommand(gpa, &cmd, &.{});
     try std.testing.expectEqual(error.FlagGroupViolation, out.err.?);
-    TestHelper.checkStringContains(cmd.err_msg_buf[0..cmd.err_msg_len], "at least one of the flags");
+    try TestHelper.checkStringContains(out.output, "at least one of the flags");
 }
 
 test "mutually exclusive: both set violates" {
@@ -95,5 +95,5 @@ test "mutually exclusive: both set violates" {
 
     const out = try TestHelper.executeCommand(gpa, &cmd, &.{ "--alpha", "--beta" });
     try std.testing.expectEqual(error.FlagGroupViolation, out.err.?);
-    TestHelper.checkStringContains(cmd.err_msg_buf[0..cmd.err_msg_len], "none of the others can be");
+    try TestHelper.checkStringContains(out.output, "none of the others can be");
 }

@@ -424,7 +424,7 @@ test "usageString renders usage block" {
     defer cmd.deinit(gpa);
     const usage = try cmd.usageString(gpa);
     defer gpa.free(usage);
-    TestHelper.checkStringContains(usage, "Usage:");
+    try TestHelper.checkStringContains(usage, "Usage:");
 }
 
 test "helpFunc returns null when not set" {
@@ -536,8 +536,26 @@ test "find returns remaining args" {
     addCommand(&root, &child);
     defer root.deinit(gpa);
     const result = root.find(gpa, &.{ "child", "arg1", "arg2" });
+    defer if (result.owned_args) |a| gpa.free(a);
     try std.testing.expect(result.cmd == &child);
     try std.testing.expect(result.args.len == 2);
+}
+
+test "find copies and frees args when command name is not first" {
+    var root = Command{ .use = "root", .run = emptyRun };
+    var child = Command{ .use = "child", .run = emptyRun };
+    addCommand(&root, &child);
+    defer root.deinit(gpa);
+    // The flag token precedes the subcommand name, so argsMinusFirstX must allocate
+    // a copy (i > 0 path). The caller must free it via owned_args.
+    const result = root.find(gpa, &.{ "--verbose", "child", "arg1" });
+    defer if (result.owned_args) |a| gpa.free(a);
+    try std.testing.expect(result.owned_args != null);
+    try std.testing.expect(result.cmd == &child);
+    // Go parity: Find returns flagsAndArgs — the command name removed, flags retained.
+    try std.testing.expectEqual(@as(usize, 2), result.args.len);
+    try std.testing.expectEqualStrings("--verbose", result.args[0]);
+    try std.testing.expectEqualStrings("arg1", result.args[1]);
 }
 
 test "traverse behaves like find" {

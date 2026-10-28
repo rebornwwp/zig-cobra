@@ -112,7 +112,7 @@ test "post hooks are skipped when run fails" {
         .pre_run = recHook('C'),
         .run_e = recHookE('D', true),
         .post_run = recHook('E'),
-        .silence_errors = true,
+        .silence_errors = false, // message must be captured for assertion
         .silence_usage = true,
     };
     defer cmd.deinit(gpa);
@@ -120,7 +120,7 @@ test "post hooks are skipped when run fails" {
     const out = try TestHelper.executeCommand(gpa, &cmd, &.{});
     try std.testing.expect(out.err != null);
     try std.testing.expectEqualStrings("CD", hook_log[0..hook_len]);
-    TestHelper.checkStringContains(out.output, "RunFailed");
+    try TestHelper.checkStringContains(out.output, "RunFailed");
 }
 
 test "persistent flags are inherited and parsed by children" {
@@ -145,13 +145,13 @@ test "required flag violation reports Go-style message" {
     var name: []const u8 = "";
     try fs.stringVar(&name, "name", "", "name");
 
-    var cmd = Command{ .use = "app", .run = emptyRun, .flags_ptr = &fs, .silence_errors = true, .silence_usage = true };
+    var cmd = Command{ .use = "app", .run = emptyRun, .flags_ptr = &fs, .silence_errors = false, .silence_usage = true };
     defer cmd.deinit(gpa);
     try shell_completions.markFlagRequired(&cmd, gpa, "name");
 
     const out = try TestHelper.executeCommand(gpa, &cmd, &.{});
     try std.testing.expect(out.err != null);
-    TestHelper.checkStringContains(out.output, "required flag(s) \"name\" not set");
+    try TestHelper.checkStringContains(out.output, "required flag(s) \"name\" not set");
 
     const ok = try TestHelper.executeCommand(gpa, &cmd, &.{ "--name", "x" });
     try std.testing.expect(ok.err == null);
@@ -163,7 +163,7 @@ test "version flag prints version and exits successfully" {
 
     const out = try TestHelper.executeCommand(gpa, &cmd, &.{"--version"});
     try std.testing.expect(out.err == null);
-    TestHelper.checkStringContains(out.output, "app version 1.2.3");
+    try TestHelper.checkStringContains(out.output, "app version 1.2.3");
 }
 
 test "help flag prints help" {
@@ -172,8 +172,8 @@ test "help flag prints help" {
 
     const out = try TestHelper.executeCommand(gpa, &cmd, &.{"--help"});
     try std.testing.expect(out.err == null);
-    TestHelper.checkStringContains(out.output, "app short");
-    TestHelper.checkStringContains(out.output, "Usage:");
+    try TestHelper.checkStringContains(out.output, "app short");
+    try TestHelper.checkStringContains(out.output, "Usage:");
 }
 
 test "help subcommand prints target command help" {
@@ -184,7 +184,7 @@ test "help subcommand prints target command help" {
 
     const out = try TestHelper.executeCommand(gpa, &root, &.{ "help", "child" });
     try std.testing.expect(out.err == null);
-    TestHelper.checkStringContains(out.output, "child short desc");
+    try TestHelper.checkStringContains(out.output, "child short desc");
 }
 
 test "unknown command reports error with suggestions" {
@@ -195,9 +195,9 @@ test "unknown command reports error with suggestions" {
 
     const out = try TestHelper.executeCommand(gpa, &root, &.{"helo"});
     try std.testing.expect(out.err != null);
-    TestHelper.checkStringContains(out.output, "unknown command \"helo\" for \"root\"");
-    TestHelper.checkStringContains(out.output, "Did you mean this?");
-    TestHelper.checkStringContains(out.output, "hello");
+    try TestHelper.checkStringContains(out.output, "unknown command \"helo\" for \"root\"");
+    try TestHelper.checkStringContains(out.output, "Did you mean this?");
+    try TestHelper.checkStringContains(out.output, "hello");
 }
 
 test "root with subcommands rejects stray positional args (legacyArgs)" {
@@ -237,12 +237,13 @@ test "__complete emits protocol: values with descriptions then directive" {
     var buf: [4096]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     root.setOut(&w);
+    root.setErr(&w); // capture stderr directive debug line
 
     var req = [_][]const u8{""};
     try completions.getCompletions(&root, io, gpa, &req, true);
     const out = std.Io.Writer.buffered(&w);
-    TestHelper.checkStringContains(out, "hello\tsay hi");
-    TestHelper.checkStringContains(out, ":4"); // NoFileComp
+    try TestHelper.checkStringContains(out, "hello\tsay hi");
+    try TestHelper.checkStringContains(out, ":4"); // NoFileComp
 }
 
 test "__complete flag-name completion returns long and short forms" {
@@ -258,13 +259,14 @@ test "__complete flag-name completion returns long and short forms" {
     var buf: [4096]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     cmd.setOut(&w);
+    cmd.setErr(&w); // capture stderr directive debug line
 
     var req = [_][]const u8{"-"};
     try completions.getCompletions(&cmd, io, gpa, &req, true);
     const out = std.Io.Writer.buffered(&w);
-    TestHelper.checkStringContains(out, "--name");
-    TestHelper.checkStringContains(out, "-n");
-    TestHelper.checkStringContains(out, ":4");
+    try TestHelper.checkStringContains(out, "--name");
+    try TestHelper.checkStringContains(out, "-n");
+    try TestHelper.checkStringContains(out, ":4");
 }
 
 test "__complete flag-value completion uses registered func" {
@@ -281,13 +283,14 @@ test "__complete flag-value completion uses registered func" {
     var buf: [4096]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     cmd.setOut(&w);
+    cmd.setErr(&w); // capture stderr directive debug line
 
     var req = [_][]const u8{ "--dir", "" };
     try completions.getCompletions(&cmd, io, gpa, &req, true);
     const out = std.Io.Writer.buffered(&w);
-    TestHelper.checkStringContains(out, "/tmp");
-    TestHelper.checkStringContains(out, "/var");
-    TestHelper.checkStringContains(out, ":4");
+    try TestHelper.checkStringContains(out, "/tmp");
+    try TestHelper.checkStringContains(out, "/var");
+    try TestHelper.checkStringContains(out, ":4");
 }
 
 test "genMarkdown renders core sections" {
@@ -306,13 +309,13 @@ test "genMarkdown renders core sections" {
     var w = std.Io.Writer.fixed(&buf);
     try cobra.doc_mod.genMarkdown(gpa, &root, io, &w);
     const out = std.Io.Writer.buffered(&w);
-    TestHelper.checkStringContains(out, "## root");
-    TestHelper.checkStringContains(out, "### Synopsis");
-    TestHelper.checkStringContains(out, "root long");
-    TestHelper.checkStringContains(out, "### Options");
-    TestHelper.checkStringContains(out, "--name");
-    TestHelper.checkStringContains(out, "### SEE ALSO");
-    TestHelper.checkStringContains(out, "root_child.md");
+    try TestHelper.checkStringContains(out, "## root");
+    try TestHelper.checkStringContains(out, "### Synopsis");
+    try TestHelper.checkStringContains(out, "root long");
+    try TestHelper.checkStringContains(out, "### Options");
+    try TestHelper.checkStringContains(out, "--name");
+    try TestHelper.checkStringContains(out, "### SEE ALSO");
+    try TestHelper.checkStringContains(out, "root_child.md");
 }
 
 test "genBashCompletionV2 substitutes program name" {
@@ -325,7 +328,7 @@ test "genBashCompletionV2 substitutes program name" {
     var w = std.Io.Writer.fixed(&buf);
     try completions.genBashCompletionV2(&cmd, &w, true);
     const out = std.Io.Writer.buffered(&w);
-    TestHelper.checkStringContains(out, "__myapp_debug()");
-    TestHelper.checkStringContains(out, "complete -o default -F __start_myapp myapp");
-    TestHelper.checkStringOmits(out, "%[1]s");
+    try TestHelper.checkStringContains(out, "__myapp_debug()");
+    try TestHelper.checkStringContains(out, "complete -o default -F __start_myapp myapp");
+    try TestHelper.checkStringOmits(out, "%[1]s");
 }
