@@ -11,12 +11,6 @@ zig build run-demo -- --help # Run simple demo
 zig build run-dockr -- --help # Run Docker-style demo
 zig fmt --check src/ examples/ build.zig  # Check formatting
 zig fmt src/ examples/       # Format code
-
-# Using just (task runner)
-just test                    # Run tests
-just build                   # Build library
-just demo -- --help          # Run demo
-just fmt                     # Format code
 ```
 
 ## Dependencies
