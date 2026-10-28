@@ -342,47 +342,6 @@ zig build run-dockr -- container ls
 zig fmt src/ examples/     # Format code
 ```
 
-## Development
-
-For day-to-day development the project ships a [`justfile`](justfile) so that common workflows stay short and consistent. [`just`](https://github.com/casey/just) is a modern command runner — essentially a better `make`.
-
-### Install `just`
-
-Pick the method that fits your platform:
-
-| Method | Command |
-|--------|---------|
-| macOS (Homebrew) | `brew install just` |
-| Linux (apt / Debian-based) | `sudo apt install just` |
-| Linux (Homebrew) | `brew install just` |
-| Windows (Scoop) | `scoop install just` |
-| Windows (winget) | `winget install Casey.Just` |
-| Cargo (any platform) | `cargo install just` |
-| Pre-built binary | download from <https://github.com/casey/just/releases> |
-
-Verify the installation:
-
-```bash
-just --version
-```
-
-### Available recipes
-
-Run `just` with no arguments to list everything:
-
-```bash
-just              # list all recipes
-just test         # Build + run all tests
-just build        # Build the library
-just demo <args>  # Run the hello-world demo
-just dockr <args> # Run the Docker-style demo
-just fmt          # zig fmt src/ examples/
-just fmt-check    # zig fmt --check (CI friendly)
-just clean        # Remove zig-out/ and .zig-cache/
-```
-
-Everything in the `justfile` is a thin wrapper around `zig build`, so `just build` is equivalent to `zig build`.
-
 ## License
 
 [Apache License 2.0](LICENSE)

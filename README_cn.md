@@ -340,47 +340,6 @@ zig build run-dockr -- container ls
 zig fmt src/ examples/     # 格式化代码
 ```
 
-## 开发
-
-日常开发时项目提供了 [`justfile`](justfile)，用来把一些常用命令收敛成简短、一致的入口。[`just`](https://github.com/casey/just) 是一个现代的 command runner，可以理解为「更好用的 `make`」。
-
-### 安装 `just`
-
-根据你的平台选择对应方式：
-
-| 方式 | 命令 |
-|------|------|
-| macOS（Homebrew） | `brew install just` |
-| Linux（apt / Debian 系列） | `sudo apt install just` |
-| Linux（Homebrew） | `brew install just` |
-| Windows（Scoop） | `scoop install just` |
-| Windows（winget） | `winget install Casey.Just` |
-| Cargo（任意平台） | `cargo install just` |
-| 预编译二进制 | 从 <https://github.com/casey/just/releases> 下载 |
-
-安装完成后确认：
-
-```bash
-just --version
-```
-
-### 可用命令
-
-直接运行 `just` 即可列出全部命令：
-
-```bash
-just              # 列出所有命令
-just test         # 构建并运行所有测试
-just build        # 构建库
-just demo <args>  # 运行 hello-world 演示
-just dockr <args> # 运行 Docker 风格演示
-just fmt          # zig fmt src/ examples/
-just fmt-check    # zig fmt --check（CI 友好）
-just clean        # 删除 zig-out/ 和 .zig-cache/
-```
-
-`justfile` 里的每一条都只是 `zig build` 的薄封装，所以 `just build` 与 `zig build` 完全等价。
-
 ## 许可证
 
 [Apache License 2.0](LICENSE)
