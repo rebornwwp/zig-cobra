@@ -6,7 +6,7 @@ Zig 0.17.0 CLI framework ported from Go's spf13/cobra. Depends on zig-pflag for 
 
 ```bash
 zig build                    # Build library
-zig build test               # Run all tests (139 tests)
+zig build test               # Run all tests (145 tests)
 zig build run-demo -- --help # Run simple demo
 zig build run-dockr -- --help # Run Docker-style demo
 zig fmt --check src/ examples/ build.zig  # Check formatting
