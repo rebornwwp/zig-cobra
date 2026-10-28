@@ -29,20 +29,14 @@ Built on [rebornwwp/zig-pflag](https://github.com/rebornwwp/zig-pflag) for POSIX
 
 ## Installation
 
-Add to your `build.zig.zon`:
+Add dependencies using `zig fetch`:
 
-```zig
-.dependencies = .{
-    .cobra = .{
-        .url = "https://github.com/rebornwwp/zig-cobra/archive/refs/heads/main.tar.gz",
-        .hash = "...",  // zig build 会提示正确值
-    },
-    .pflag = .{
-        .url = "https://github.com/rebornwwp/zig-pflag/archive/refs/heads/main.tar.gz",
-        .hash = "...",
-    },
-},
+```bash
+zig fetch --save git+https://github.com/rebornwwp/zig-cobra.git
+zig fetch --save git+https://github.com/rebornwwp/zig-pflag.git
 ```
+
+This will automatically add the dependencies to your `build.zig.zon` with the correct hash.
 
 Then in your `build.zig`:
 

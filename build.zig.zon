@@ -5,12 +5,8 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .pflag = .{
-            // 发布后取消注释下面两行，删除 .path 行
-            // 先 push tag: git -C ../zig-pflag push origin v0.1.0
-            // 然后 zig build 会自动提示正确的 hash
-            // .url = "https://github.com/rebornwwp/zig-pflag/archive/refs/tags/v0.1.0.tar.gz",
-            // .hash = "pflag-0.1.0-...",
-            .path = "../zig-pflag",
+            .url = "git+https://github.com/rebornwwp/zig-pflag.git#2565f73ffeb3ce25d9863d17ecb90eadbd9adce9",
+            .hash = "pflag-0.1.0-v3ceEgbXAgAeUQ5GRYFyppdejzVaIvWcxn2HnDjbjM8N",
         },
     },
     .paths = .{

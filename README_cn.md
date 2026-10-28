@@ -27,20 +27,14 @@
 
 ## 安装
 
-将以下内容添加到你的 `build.zig.zon`：
+使用 `zig fetch` 添加依赖：
 
-```zig
-.dependencies = .{
-    .cobra = .{
-        .url = "https://github.com/rebornwwp/zig-cobra/archive/refs/heads/main.tar.gz",
-        .hash = "...",  // zig build 会提示正确值
-    },
-    .pflag = .{
-        .url = "https://github.com/rebornwwp/zig-pflag/archive/refs/heads/main.tar.gz",
-        .hash = "...",
-    },
-},
+```bash
+zig fetch --save git+https://github.com/rebornwwp/zig-cobra.git
+zig fetch --save git+https://github.com/rebornwwp/zig-pflag.git
 ```
+
+这会自动将依赖和正确的 hash 添加到你的 `build.zig.zon` 中。
 
 然后在你的 `build.zig` 中：
 
