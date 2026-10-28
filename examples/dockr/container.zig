@@ -25,7 +25,7 @@ pub fn init_run(gpa: std.mem.Allocator, cmd: *Command, flags: *pflag.FlagSet, op
         .long = "Creates a writeable container layer over the specified image\nand then starts it using the specified command.",
         .example = "  dockr container run -d --name web -p 80:80 nginx\n  dockr container run -it --rm ubuntu bash",
         .run = runFn,
-        .flags = flags,
+        .flags_ptr = flags,
         .args_validator = cobra.MinimumNArgs(1),
     };
     cmd.iflags = @ptrCast(@alignCast(opts));
@@ -41,7 +41,7 @@ pub fn init_ls(gpa: std.mem.Allocator, cmd: *Command, flags: *pflag.FlagSet) voi
         .use = "ls [OPTIONS]",
         .short = "List containers",
         .run = lsFn,
-        .flags = flags,
+        .flags_ptr = flags,
     };
 }
 
@@ -53,7 +53,7 @@ pub fn init_rm(gpa: std.mem.Allocator, cmd: *Command, flags: *pflag.FlagSet) voi
         .use = "rm [OPTIONS] CONTAINER [CONTAINER...]",
         .short = "Remove one or more containers",
         .run = rmFn,
-        .flags = flags,
+        .flags_ptr = flags,
         .args_validator = cobra.MinimumNArgs(1),
     };
 }

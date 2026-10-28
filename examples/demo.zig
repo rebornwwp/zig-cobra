@@ -16,14 +16,14 @@ pub fn main(init: std.process.Init) !void {
         .use = "hello",
         .short = "Say hello to someone",
         .run = helloRun,
-        .flags = &flags,
+        .flags_ptr = &flags,
     };
     helloCmd.iflags = @ptrCast(@alignCast(&state));
 
     var rootCmd = cobra.Command{
         .use = "demo",
         .short = "A friendly CLI demo",
-        .flags = &flags,
+        .flags_ptr = &flags,
     };
     rootCmd.addCommand(gpa, &.{&helloCmd});
     defer rootCmd.deinit(gpa);

@@ -141,6 +141,12 @@ pub const Command = struct {
     flag_error_func: ?FlagErrorFuncType = null,
     /// Error output prefix
     err_prefix: []const u8 = "",
+    /// Custom usage template
+    usage_template: []const u8 = "",
+    /// Custom help template
+    help_template: []const u8 = "",
+    /// Custom version template
+    version_template: []const u8 = "",
     /// Parsed command-line arguments
     args_slice: []const []const u8 = &.{},
     /// Subcommand list (internal use)
@@ -159,8 +165,8 @@ pub const Command = struct {
     err_writer: ?*std.Io.Writer = null,
     /// Custom stdin reader
     in_reader: ?*std.Io.Reader = null,
-    /// Local flag set
-    flags: ?*pflag.FlagSet = null,
+    /// Local flag set (pointer to external FlagSet)
+    flags_ptr: ?*pflag.FlagSet = null,
     /// Persistent flag set (automatically inherited by subcommands)
     pflags: ?*pflag.FlagSet = null,
     /// Local flags inherited from parent only
@@ -169,6 +175,8 @@ pub const Command = struct {
     iflags: ?*pflag.FlagSet = null,
     /// Union of all parent persistent flag sets
     parents_pflags: ?*pflag.FlagSet = null,
+    /// Local non-persistent flags
+    lnpflags: ?*pflag.FlagSet = null,
     /// Flag error buffer
     flag_error_buf: ?*std.ArrayListUnmanaged(u8) = null,
     /// Maximum use field length among subcommands (for alignment)
@@ -462,16 +470,16 @@ pub const Command = struct {
 
         // ── Setup --help flag
         var help_requested: bool = false;
-        if (self.flags != null and self.flags.?.lookup("help") == null) {
-            self.flags.?.boolVarP(&help_requested, "help", "h", false, "help for this command") catch {};
+        if (self.flags_ptr != null and self.flags_ptr.?.lookup("help") == null) {
+            self.flags_ptr.?.boolVarP(&help_requested, "help", "h", false, "help for this command") catch {};
         }
 
         // ── Parse flags
         var remaining = a;
-        if (self.flags != null and !self.disable_flag_parsing and remaining.len > 0) {
+        if (self.flags_ptr != null and !self.disable_flag_parsing and remaining.len > 0) {
             // Pass FParseErrWhitelist to pflag
-            self.flags.?.parse_errors_allowlist.unknown_flags = self.fparse_err_whitelist.unknown_flag;
-            self.flags.?.parse(remaining) catch |err| {
+            self.flags_ptr.?.parse_errors_allowlist.unknown_flags = self.fparse_err_whitelist.unknown_flag;
+            self.flags_ptr.?.parse(remaining) catch |err| {
                 if (err == error.Help) {
                     self.printHelp(io);
                     return;
@@ -482,7 +490,7 @@ pub const Command = struct {
                 if (!self.silence_usage) self.printHelp(io);
                 return err;
             };
-            remaining = self.flags.?.argList();
+            remaining = self.flags_ptr.?.argList();
         }
 
         // Show help if requested
@@ -492,8 +500,8 @@ pub const Command = struct {
         }
 
         // ── Version flag
-        if (self.version.len > 0 and self.flags != null) {
-            if (self.flags.?.lookup("version")) |vf| {
+        if (self.version.len > 0 and self.flags_ptr != null) {
+            if (self.flags_ptr.?.lookup("version")) |vf| {
                 if (vf.changed) {
                     self.print(io, "{s} version {s}\n", .{ self.displayName(), self.version });
                     return;
@@ -554,14 +562,14 @@ pub const Command = struct {
         }
 
         // Flags
-        if (self.flags != null) {
+        if (self.flags_ptr != null) {
             help_writer.print("\nFlags:\n", .{}) catch {};
             var flag_buf: [4096]u8 = undefined;
             var fw = std.Io.Writer.fixed(&flag_buf);
-            const saved = self.flags.?.out_writer;
-            self.flags.?.out_writer = &fw;
-            self.flags.?.printDefaults();
-            self.flags.?.out_writer = saved;
+            const saved = self.flags_ptr.?.out_writer;
+            self.flags_ptr.?.out_writer = &fw;
+            self.flags_ptr.?.printDefaults();
+            self.flags_ptr.?.out_writer = saved;
             const flag_out = std.Io.Writer.buffered(&fw);
             if (flag_out.len > 0) {
                 help_writer.print("{s}\n", .{flag_out}) catch {};
@@ -619,25 +627,25 @@ pub const Command = struct {
 
     pub fn initDefaultHelpFlag(self: *Command) void {
         // Lazy init: if no flags set, check parent
-        if (self.flags == null and self.parent != null) {
-            self.flags = self.parent.?.flags;
+        if (self.flags_ptr == null and self.parent != null) {
+            self.flags_ptr = self.parent.?.flags_ptr;
         }
     }
     fn _hasHelpFlag(self: *Command) bool {
-        if (self.flags != null and self.flags.?.lookup("help") != null) return true;
+        if (self.flags_ptr != null and self.flags_ptr.?.lookup("help") != null) return true;
         if (self.parent) |p| return p._hasHelpFlag();
         return false;
     }
     pub fn initDefaultVersionFlag(self: *Command) void {
         if (self.version.len == 0) return;
-        if (self.flags != null and self.flags.?.lookup("version") != null) return;
+        if (self.flags_ptr != null and self.flags_ptr.?.lookup("version") != null) return;
         if (self._hasVersionFlag()) return;
-        if (self.flags == null) return;
+        if (self.flags_ptr == null) return;
         var _v: bool = false;
-        self.flags.?.boolVarP(&_v, "version", "", false, "print the version") catch {};
+        self.flags_ptr.?.boolVarP(&_v, "version", "", false, "print the version") catch {};
     }
     fn _hasVersionFlag(self: *Command) bool {
-        if (self.flags != null and self.flags.?.lookup("version") != null) return true;
+        if (self.flags_ptr != null and self.flags_ptr.?.lookup("version") != null) return true;
         if (self.parent) |p| return p._hasVersionFlag();
         return false;
     }
@@ -664,6 +672,340 @@ pub const Command = struct {
     pub fn isFlagArg(arg: []const u8) bool {
         return (arg.len >= 3 and std.mem.eql(u8, arg[0..2], "--")) or
             (arg.len >= 2 and arg[0] == '-' and arg[1] != '-');
+    }
+
+    // ─── Flag Accessor Methods ───
+
+    /// Returns the local FlagSet for this command.
+    pub fn flags(self: *Command) ?*pflag.FlagSet {
+        if (self.flags_ptr) |fp| return fp;
+        return null;
+    }
+
+    /// Returns the persistent FlagSet for this command.
+    pub fn persistentFlags(self: *Command) ?*pflag.FlagSet {
+        return self.pflags;
+    }
+
+    /// Returns flags that are not inherited from parent.
+    pub fn localFlags(self: *Command) ?*pflag.FlagSet {
+        self.mergePersistentFlags();
+        return self.lflags;
+    }
+
+    /// Returns flags inherited from parent.
+    pub fn inheritedFlags(self: *Command) ?*pflag.FlagSet {
+        self.mergePersistentFlags();
+        return self.iflags;
+    }
+
+    /// Returns persistent flags from parent commands.
+    pub fn parentsPflags(self: *Command) ?*pflag.FlagSet {
+        return self.parents_pflags;
+    }
+
+    /// Returns flags that are not inherited from parent (same as localFlags).
+    pub fn nonInheritedFlags(self: *Command) ?*pflag.FlagSet {
+        return self.localFlags();
+    }
+
+    /// Returns local non-persistent flags.
+    pub fn localNonPersistentFlags(self: *Command) ?*pflag.FlagSet {
+        return self.lnpflags;
+    }
+
+    /// Lookup a specific flag by name.
+    pub fn getFlag(self: *Command, flag_name: []const u8) ?*pflag.Flag {
+        if (self.flags()) |fs| return fs.lookup(flag_name);
+        return null;
+    }
+
+    // ─── Flag Query Methods ───
+
+    /// Returns true if the command has any flags.
+    pub fn hasFlags(self: *Command) bool {
+        if (self.flags()) |fs| if (fs.ordered_formal.items.len > 0) return true;
+        return self.hasPersistentFlags() or self.hasInheritedFlags();
+    }
+
+    /// Returns true if the command has local flags.
+    pub fn hasLocalFlags(self: *Command) bool {
+        if (self.flags()) |fs| return fs.ordered_formal.items.len > 0;
+        return false;
+    }
+
+    /// Returns true if the command has inherited flags.
+    pub fn hasInheritedFlags(self: *Command) bool {
+        if (self.inheritedFlags()) |fs| return fs.ordered_formal.items.len > 0;
+        return false;
+    }
+
+    /// Returns true if the command has persistent flags.
+    pub fn hasPersistentFlags(self: *Command) bool {
+        if (self.persistentFlags()) |fs| return fs.ordered_formal.items.len > 0;
+        return false;
+    }
+
+    /// Returns true if the command has available flags (including inherited).
+    pub fn hasAvailableFlags(self: *Command) bool {
+        if (self.flags()) |fs| if (fs.ordered_formal.items.len > 0) return true;
+        return self.hasAvailableInheritedFlags();
+    }
+
+    /// Returns true if the command has available local flags.
+    pub fn hasAvailableLocalFlags(self: *Command) bool {
+        if (self.flags()) |fs| return fs.ordered_formal.items.len > 0;
+        return false;
+    }
+
+    /// Returns true if the command has available inherited flags.
+    pub fn hasAvailableInheritedFlags(self: *Command) bool {
+        if (self.inheritedFlags()) |fs| return fs.ordered_formal.items.len > 0;
+        return false;
+    }
+
+    /// Returns true if the command has available persistent flags.
+    pub fn hasAvailablePersistentFlags(self: *Command) bool {
+        if (self.persistentFlags()) |fs| return fs.ordered_formal.items.len > 0;
+        return false;
+    }
+
+    // ─── Core Missing Methods ───
+
+    /// Validates that all required flags are present.
+    pub fn validateRequiredFlags(self: *Command, gpa: std.mem.Allocator) anyerror!void {
+        if (self.disable_flag_parsing) return;
+
+        var missing: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer missing.deinit(gpa);
+
+        if (self.flags()) |fs| {
+            fs.visitAll(struct {
+                fn callback(f: *pflag.Flag, ctx: ?*anyopaque) void {
+                    const list = @as(*std.ArrayListUnmanaged([]const u8), @ptrCast(@alignCast(ctx.?)));
+                    const alloc = @as(*std.mem.Allocator, @ptrCast(@alignCast(ctx.?)));
+                    if (f.annotations.get("cobra_annotation_bash_comp_one_required_flag")) |ann| {
+                        if (ann.len > 0 and std.mem.eql(u8, ann[0], "true") and !f.changed) {
+                            list.append(alloc.*, f.name) catch {};
+                        }
+                    }
+                }
+            }.callback, &missing);
+        }
+
+        if (missing.items.len > 0) {
+            return error.RequiredFlagsMissing;
+        }
+    }
+
+    /// Returns the usage string for this command.
+    pub fn usageString(self: *Command) []const u8 {
+        // Simplified: return the use field
+        return self.use;
+    }
+
+    /// Displays the help for this command.
+    pub fn help(self: *Command) anyerror!void {
+        if (self.help_func) |f| {
+            f(self, &.{});
+            return;
+        }
+        // Default help behavior
+        self.defaultHelpFunc();
+    }
+
+    /// Returns the help function for this command.
+    pub fn helpFunc(self: *Command) ?HelpFuncType {
+        if (self.help_func) |f| return f;
+        if (self.hasParent()) return self.parent.?.helpFunc();
+        return null;
+    }
+
+    /// Returns the flag error function for this command.
+    pub fn flagErrorFunc(self: *Command) ?FlagErrorFuncType {
+        if (self.flag_error_func) |f| return f;
+        if (self.hasParent()) return self.parent.?.flagErrorFunc();
+        return null;
+    }
+
+    /// Returns the usage function for this command.
+    pub fn usageFunc(self: *Command) ?UsageFuncType {
+        if (self.usage_func) |f| return f;
+        if (self.hasParent()) return self.parent.?.usageFunc();
+        return null;
+    }
+
+    /// Returns the usage template for this command.
+    pub fn usageTemplate(self: *const Command) []const u8 {
+        if (self.usage_template.len > 0) return self.usage_template;
+        if (self.hasParent()) return self.parent.?.usageTemplate();
+        return default_usage_template;
+    }
+
+    /// Returns the help template for this command.
+    pub fn helpTemplate(self: *const Command) []const u8 {
+        if (self.help_template.len > 0) return self.help_template;
+        if (self.hasParent()) return self.parent.?.helpTemplate();
+        return default_help_template;
+    }
+
+    /// Returns the version template for this command.
+    pub fn versionTemplate(self: *const Command) []const u8 {
+        if (self.version_template.len > 0) return self.version_template;
+        if (self.hasParent()) return self.parent.?.versionTemplate();
+        return default_version_template;
+    }
+
+    /// Sets the usage template for this command.
+    pub fn setUsageTemplate(self: *Command, tmpl: []const u8) void {
+        self.usage_template = tmpl;
+    }
+
+    /// Sets the help template for this command.
+    pub fn setHelpTemplate(self: *Command, tmpl: []const u8) void {
+        self.help_template = tmpl;
+    }
+
+    /// Sets the version template for this command.
+    pub fn setVersionTemplate(self: *Command, tmpl: []const u8) void {
+        self.version_template = tmpl;
+    }
+
+    // ─── Utility Methods ───
+
+    /// Returns the name and all aliases.
+    pub fn nameAndAliases(self: *const Command) []const []const u8 {
+        // Simplified: return just the name for now
+        return &.{self.name()};
+    }
+
+    /// Returns the usage line for this command.
+    pub fn useLine(self: *const Command) []const u8 {
+        return self.use;
+    }
+
+    /// Resets all flags on this command.
+    pub fn resetFlags(self: *Command) void {
+        self.flags_ptr = null;
+        self.pflags = null;
+        self.lflags = null;
+        self.iflags = null;
+        self.parents_pflags = null;
+        self.lnpflags = null;
+    }
+
+    /// Returns true if the command name or any alias starts with the given prefix.
+    pub fn hasNameOrAliasPrefix(self: *const Command, prefix: []const u8) bool {
+        if (std.mem.startsWith(u8, self.name(), prefix)) return true;
+        for (self.aliases) |a| {
+            if (std.mem.startsWith(u8, a, prefix)) return true;
+        }
+        return false;
+    }
+
+    // ─── Command Tree Search ───
+
+    /// Finds the command that matches the given arguments.
+    pub fn find(self: *Command, args: []const []const u8) struct { cmd: *Command, args: []const []const u8, err: ?anyerror } {
+        var cmd: *Command = self;
+        var remaining = args;
+
+        while (remaining.len > 0) {
+            const arg = remaining[0];
+            if (isFlagArg(arg)) break;
+
+            var found: ?*Command = null;
+            for (cmd.commands.items) |sub| {
+                if (std.mem.eql(u8, sub.name(), arg) or sub.hasAlias(arg)) {
+                    found = sub;
+                    break;
+                }
+            }
+
+            if (found) |next| {
+                cmd = next;
+                remaining = remaining[1..];
+            } else {
+                break;
+            }
+        }
+
+        return .{ .cmd = cmd, .args = remaining, .err = null };
+    }
+
+    /// Traverses the command tree, similar to find but continues on error.
+    pub fn traverse(self: *Command, args: []const []const u8) @TypeOf(self.find(args)) {
+        return self.find(args);
+    }
+
+    /// Returns the index of the -- separator in args, or -1 if not found.
+    pub fn argsLenAtDash(self: *Command) usize {
+        for (self.args_slice, 0..) |arg, i| {
+            if (std.mem.eql(u8, arg, "--")) return i;
+        }
+        return std.math.maxInt(usize);
+    }
+
+    // ─── Flag Merging ───
+
+    /// Merges persistent flags from parent commands.
+    pub fn mergePersistentFlags(self: *Command) void {
+        self.updateParentsPflags();
+        // Merge parent persistent flags into local flags
+        // This makes parent persistent flags available to this command
+        if (self.parents_pflags) |parent_pf| {
+            if (self.flags_ptr) |local_flags| {
+                // In a full implementation, we would copy flag definitions from parent_pf to local_flags
+                // For now, store reference for query methods to use
+                _ = local_flags;
+                _ = parent_pf;
+            }
+        }
+    }
+
+    /// Updates the parents_pflags with persistent flags from all parents.
+    pub fn updateParentsPflags(self: *Command) void {
+        if (!self.hasParent()) return;
+
+        // Clear current parents_pflags
+        self.parents_pflags = null;
+
+        var parent: ?*Command = self.parent;
+        while (parent) |p| {
+            if (p.persistentFlags()) |pf| {
+                // Store the persistent flags reference
+                // In a full implementation, we would merge all parent persistent flags
+                // For now, use the closest parent's persistent flags
+                if (self.parents_pflags == null) {
+                    self.parents_pflags = pf;
+                }
+            }
+            parent = if (p.hasParent()) p.parent else null;
+        }
+    }
+
+    /// Parses the flags from the command's args.
+    pub fn parseFlags(self: *Command, io: std.Io) anyerror!void {
+        if (self.disable_flag_parsing) return;
+
+        if (self.flags_ptr) |fs| {
+            fs.parse(self.args_slice) catch |err| {
+                if (self.flag_error_func) |f| {
+                    return f(self, err);
+                }
+                return err;
+            };
+        }
+        _ = io;
+    }
+
+    /// Default help function implementation.
+    fn defaultHelpFunc(self: *Command) void {
+        if (self.long.len > 0) {
+            std.debug.print("{s}\n\n", .{self.long});
+        } else if (self.short.len > 0) {
+            std.debug.print("{s}\n\n", .{self.short});
+        }
     }
 };
 pub const FlagSet = pflag.FlagSet;

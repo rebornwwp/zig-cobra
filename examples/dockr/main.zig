@@ -15,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
     var root_flags = pflag.FlagSet.init(gpa, "dockr");
     defer root_flags.deinit();
     root_flags.stringVarP(&state.config, "config", "c", "/etc/dockr/config.toml", "config file path") catch {};
-    var root_cmd = Command{ .use = "dockr", .short = "A self-sufficient runtime for containers", .long = "dockr is a CLI for managing containers, images, and volumes.\nUse 'dockr COMMAND --help' for more information on a command.", .flags = &root_flags, .persistent_pre_run = rootPersistentPreRun };
+    var root_cmd = Command{ .use = "dockr", .short = "A self-sufficient runtime for containers", .long = "dockr is a CLI for managing containers, images, and volumes.\nUse 'dockr COMMAND --help' for more information on a command.", .flags_ptr = &root_flags, .persistent_pre_run = rootPersistentPreRun };
     root_cmd.iflags = @ptrCast(@alignCast(&state));
 
     // ── All commands are var in this scope (stack-lifetime) ──

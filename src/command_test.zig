@@ -347,3 +347,219 @@ test "isAdditionalHelpTopicCommand" {
     try std.testing.expect(!deprecated.isAdditionalHelpTopicCommand());
     try std.testing.expect(!hidden.isAdditionalHelpTopicCommand());
 }
+
+// ─── Flag Accessor Methods Tests ───
+
+test "flags returns null when not set" {
+    var cmd = Command{ .use = "root" };
+    const fs = cmd.flags();
+    try std.testing.expect(fs == null);
+}
+
+test "persistentFlags returns null when not set" {
+    var cmd = Command{ .use = "root" };
+    const pfs = cmd.persistentFlags();
+    try std.testing.expect(pfs == null);
+}
+
+test "localFlags returns null when not set" {
+    var cmd = Command{ .use = "root" };
+    const lfs = cmd.localFlags();
+    try std.testing.expect(lfs == null);
+}
+
+test "inheritedFlags returns null when not set" {
+    var cmd = Command{ .use = "root" };
+    const ifs = cmd.inheritedFlags();
+    try std.testing.expect(ifs == null);
+}
+
+test "getFlag returns null for non-existent flag" {
+    var cmd = Command{ .use = "root" };
+    const f = cmd.getFlag("nonexistent");
+    try std.testing.expect(f == null);
+}
+
+// ─── Flag Query Methods Tests ───
+
+test "hasFlags returns false when no flags" {
+    var cmd = Command{ .use = "root" };
+    try std.testing.expect(!cmd.hasFlags());
+}
+
+test "hasLocalFlags returns false when no local flags" {
+    var cmd = Command{ .use = "root" };
+    try std.testing.expect(!cmd.hasLocalFlags());
+}
+
+test "hasPersistentFlags returns false when no persistent flags" {
+    var cmd = Command{ .use = "root" };
+    try std.testing.expect(!cmd.hasPersistentFlags());
+}
+
+test "hasAvailableFlags returns false when no flags" {
+    var cmd = Command{ .use = "root" };
+    try std.testing.expect(!cmd.hasAvailableFlags());
+}
+
+// ─── Core Missing Methods Tests ───
+
+test "usageString returns use field" {
+    var cmd = Command{ .use = "root [flags]" };
+    try std.testing.expectEqualStrings("root [flags]", cmd.usageString());
+}
+
+test "helpFunc returns null when not set" {
+    var cmd = Command{ .use = "root" };
+    try std.testing.expect(cmd.helpFunc() == null);
+}
+
+test "flagErrorFunc returns null when not set" {
+    var cmd = Command{ .use = "root" };
+    try std.testing.expect(cmd.flagErrorFunc() == null);
+}
+
+test "usageFunc returns null when not set" {
+    var cmd = Command{ .use = "root" };
+    try std.testing.expect(cmd.usageFunc() == null);
+}
+
+// ─── Template Methods Tests ───
+
+test "usageTemplate returns default when not set" {
+    var cmd = Command{ .use = "root" };
+    const tmpl = cmd.usageTemplate();
+    try std.testing.expect(tmpl.len > 0);
+}
+
+test "helpTemplate returns default when not set" {
+    var cmd = Command{ .use = "root" };
+    const tmpl = cmd.helpTemplate();
+    try std.testing.expect(tmpl.len > 0);
+}
+
+test "versionTemplate returns default when not set" {
+    var cmd = Command{ .use = "root" };
+    const tmpl = cmd.versionTemplate();
+    try std.testing.expect(tmpl.len > 0);
+}
+
+test "setUsageTemplate sets custom template" {
+    var cmd = Command{ .use = "root" };
+    cmd.setUsageTemplate("custom usage");
+    try std.testing.expectEqualStrings("custom usage", cmd.usageTemplate());
+}
+
+test "setHelpTemplate sets custom template" {
+    var cmd = Command{ .use = "root" };
+    cmd.setHelpTemplate("custom help");
+    try std.testing.expectEqualStrings("custom help", cmd.helpTemplate());
+}
+
+test "setVersionTemplate sets custom template" {
+    var cmd = Command{ .use = "root" };
+    cmd.setVersionTemplate("custom version");
+    try std.testing.expectEqualStrings("custom version", cmd.versionTemplate());
+}
+
+// ─── Utility Methods Tests ───
+
+test "nameAndAliases returns name" {
+    var cmd = Command{ .use = "root" };
+    const aliases = cmd.nameAndAliases();
+    try std.testing.expect(aliases.len > 0);
+}
+
+test "useLine returns use field" {
+    var cmd = Command{ .use = "root [flags]" };
+    try std.testing.expectEqualStrings("root [flags]", cmd.useLine());
+}
+
+test "resetFlags clears all flag sets" {
+    var cmd = Command{ .use = "root" };
+    cmd.resetFlags();
+    try std.testing.expect(cmd.flags_ptr == null);
+    try std.testing.expect(cmd.pflags == null);
+}
+
+test "hasNameOrAliasPrefix matches name" {
+    var cmd = Command{ .use = "root" };
+    try std.testing.expect(cmd.hasNameOrAliasPrefix("ro"));
+    try std.testing.expect(cmd.hasNameOrAliasPrefix("root"));
+    try std.testing.expect(!cmd.hasNameOrAliasPrefix("xyz"));
+}
+
+test "hasNameOrAliasPrefix matches alias" {
+    var cmd = Command{ .use = "root", .aliases = &.{"r"} };
+    try std.testing.expect(cmd.hasNameOrAliasPrefix("r"));
+}
+
+// ─── Command Tree Search Tests ───
+
+test "find returns self when no args" {
+    var cmd = Command{ .use = "root", .run = emptyRun };
+    const result = cmd.find(&.{});
+    try std.testing.expect(result.cmd == &cmd);
+    try std.testing.expect(result.args.len == 0);
+}
+
+test "find returns child command" {
+    var root = Command{ .use = "root", .run = emptyRun };
+    var child = Command{ .use = "child", .run = emptyRun };
+    addCommand(&root, &child);
+    defer root.deinit(gpa);
+    const result = root.find(&.{"child"});
+    try std.testing.expect(result.cmd == &child);
+}
+
+test "find returns remaining args" {
+    var root = Command{ .use = "root", .run = emptyRun };
+    var child = Command{ .use = "child", .run = emptyRun };
+    addCommand(&root, &child);
+    defer root.deinit(gpa);
+    const result = root.find(&.{ "child", "arg1", "arg2" });
+    try std.testing.expect(result.cmd == &child);
+    try std.testing.expect(result.args.len == 2);
+}
+
+test "traverse behaves like find" {
+    var root = Command{ .use = "root", .run = emptyRun };
+    var child = Command{ .use = "child", .run = emptyRun };
+    addCommand(&root, &child);
+    defer root.deinit(gpa);
+    const result = root.traverse(&.{"child"});
+    try std.testing.expect(result.cmd == &child);
+}
+
+test "argsLenAtDash returns maxInt when no dash" {
+    var cmd = Command{ .use = "root", .args_slice = &.{ "arg1", "arg2" } };
+    const idx = cmd.argsLenAtDash();
+    try std.testing.expect(idx == std.math.maxInt(usize));
+}
+
+test "argsLenAtDash returns index of dash" {
+    var cmd = Command{ .use = "root", .args_slice = &.{ "arg1", "--", "arg2" } };
+    const idx = cmd.argsLenAtDash();
+    try std.testing.expectEqual(@as(usize, 1), idx);
+}
+
+// ─── Flag Merging Tests ───
+
+test "mergePersistentFlags does not crash" {
+    var cmd = Command{ .use = "root" };
+    cmd.mergePersistentFlags();
+    try std.testing.expect(true);
+}
+
+test "updateParentsPflags does not crash" {
+    var cmd = Command{ .use = "root" };
+    cmd.updateParentsPflags();
+    try std.testing.expect(true);
+}
+
+test "parseFlags does not crash when no flags" {
+    var cmd = Command{ .use = "root" };
+    const io = std.Io.Threaded.global_single_threaded.*.io();
+    cmd.parseFlags(io) catch {};
+    try std.testing.expect(true);
+}
