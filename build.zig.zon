@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .pflag = .{
-            .url = "git+https://github.com/rebornwwp/zig-pflag.git#2565f73ffeb3ce25d9863d17ecb90eadbd9adce9",
-            .hash = "pflag-0.1.0-v3ceEgbXAgAeUQ5GRYFyppdejzVaIvWcxn2HnDjbjM8N",
+            .url = "git+https://github.com/rebornwwp/zig-pflag.git#f0fac0f93a60408a2365c1c0c959793ff0838a17",
+            .hash = "pflag-0.1.0-v3ceEnF9AwC7dSQ1u64M1MlDTnva_lPg4Y-lEuoSz2_b",
         },
     },
     .paths = .{
