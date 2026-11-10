@@ -3,6 +3,8 @@ const std = @import("std");
 
 pub const command_mod = @import("command.zig");
 pub const Command = command_mod.Command;
+/// Execution environment (io + allocator) threaded into run/hook/help/usage/flag-error callbacks.
+pub const Exec = command_mod.Exec;
 pub const Group = command_mod.Group;
 pub const FParseErrWhitelist = command_mod.FParseErrWhitelist;
 pub const TmplFunc = command_mod.TmplFunc;

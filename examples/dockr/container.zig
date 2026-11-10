@@ -79,7 +79,8 @@ fn io() std.Io {
     return @import("std").Io.Threaded.global_single_threaded.*.io();
 }
 
-fn runFn(cmd: *Command, args: [][]const u8) void {
+fn runFn(ev: cobra.Exec, cmd: *Command, args: [][]const u8) void {
+    _ = ev;
     const opts: *types.ContainerRunOpts = @ptrCast(@alignCast(cmd.user_data.?));
     var buf: [512]u8 = undefined;
     const msg = types.formatRun(opts, if (args.len > 0) args[0] else "image", &buf);
@@ -90,7 +91,8 @@ fn runFn(cmd: *Command, args: [][]const u8) void {
     ow.flush() catch {};
 }
 
-fn lsFn(_: *Command, _: [][]const u8) void {
+fn lsFn(ev: cobra.Exec, _: *Command, _: [][]const u8) void {
+    _ = ev;
     var buf: [256]u8 = undefined;
     var ow = std.Io.File.Writer.init(std.Io.File.stdout(), io(), &buf);
     const w = &ow.interface;
@@ -98,7 +100,8 @@ fn lsFn(_: *Command, _: [][]const u8) void {
     ow.flush() catch {};
 }
 
-fn startFn(_: *Command, args: [][]const u8) void {
+fn startFn(ev: cobra.Exec, _: *Command, args: [][]const u8) void {
+    _ = ev;
     for (args) |n| {
         var b: [256]u8 = undefined;
         var ow = std.Io.File.Writer.init(std.Io.File.stdout(), io(), &b);
@@ -107,7 +110,8 @@ fn startFn(_: *Command, args: [][]const u8) void {
         ow.flush() catch {};
     }
 }
-fn stopFn(_: *Command, args: [][]const u8) void {
+fn stopFn(ev: cobra.Exec, _: *Command, args: [][]const u8) void {
+    _ = ev;
     for (args) |n| {
         var b: [256]u8 = undefined;
         var ow = std.Io.File.Writer.init(std.Io.File.stdout(), io(), &b);
@@ -116,7 +120,8 @@ fn stopFn(_: *Command, args: [][]const u8) void {
         ow.flush() catch {};
     }
 }
-fn rmFn(_: *Command, args: [][]const u8) void {
+fn rmFn(ev: cobra.Exec, _: *Command, args: [][]const u8) void {
+    _ = ev;
     for (args) |n| {
         var b: [256]u8 = undefined;
         var ow = std.Io.File.Writer.init(std.Io.File.stdout(), io(), &b);

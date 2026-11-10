@@ -17,12 +17,13 @@ pub fn main(init: std.process.Init) !void {
     var helloCmd = cobra.Command{
         .use = "hello",
         .short = "Say hello to someone",
-        // Exec feature demo: internal_run_e receives the execution environment
-        // (io + allocator) that execute() assembled, as an explicit call
-        // parameter — the Zig "manual closure". Output goes through cmd.print,
-        // so setOut()/redirected writers keep working, and the boilerplate
-        // (global Io fetch, File.Writer, manual flush) below disappears.
-        .internal_run_e = helloRun,
+        // Zig-native Exec channel: run callbacks receive the execution
+        // environment (io + allocator) that execute() threaded from main —
+        // the explicit-parameter form of what Go expresses with closures.
+        // Output goes through cmd.print so setOut()/redirected writers keep
+        // working; no global Io fetch, no File.Writer boilerplate, no manual
+        // flush, and the callback can propagate errors.
+        .run_e = helloRun,
         .flags_ptr = &hello_flags,
     };
     // helloCmd.flags(gpa).boolVar(p: *bool, name: []const u8, value: bool, usage: []const u8)
@@ -44,7 +45,7 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
-fn helloRun(ev: cobra.command_mod.Exec, cmd: *cobra.Command, args: [][]const u8) anyerror!void {
+fn helloRun(ev: cobra.Exec, cmd: *cobra.Command, args: [][]const u8) anyerror!void {
     _ = args;
     const state: *HelloState = @ptrCast(@alignCast(cmd.user_data.?));
     cmd.print(ev.io, "hello {s}\n", .{state.name});

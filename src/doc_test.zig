@@ -8,7 +8,8 @@ const pflag = cobra.command_mod.pflag;
 const gpa = std.testing.allocator;
 
 const emptyRun = struct {
-    fn f(cmd: *Command, args: [][]const u8) void {
+    fn f(ev: @import("command.zig").Exec, cmd: *Command, args: [][]const u8) void {
+        _ = ev;
         _ = cmd;
         _ = args;
     }

@@ -12,21 +12,24 @@ pub fn init(gpa: std.mem.Allocator, cmd: *Command, ls_cmd: *Command, pull_cmd: *
 fn io() std.Io {
     return @import("std").Io.Threaded.global_single_threaded.*.io();
 }
-fn lsFn(_: *Command, _: [][]const u8) void {
+fn lsFn(ev: cobra.Exec, _: *Command, _: [][]const u8) void {
+    _ = ev;
     var b: [256]u8 = undefined;
     var ow = std.Io.File.Writer.init(std.Io.File.stdout(), io(), &b);
     const w = &ow.interface;
     w.print("REPOSITORY   TAG       SIZE\n", .{}) catch {};
     ow.flush() catch {};
 }
-fn pullFn(_: *Command, args: [][]const u8) void {
+fn pullFn(ev: cobra.Exec, _: *Command, args: [][]const u8) void {
+    _ = ev;
     var b: [256]u8 = undefined;
     var ow = std.Io.File.Writer.init(std.Io.File.stdout(), io(), &b);
     const w = &ow.interface;
     w.print("Pulling '{s}'...\n", .{args[0]}) catch {};
     ow.flush() catch {};
 }
-fn pushFn(_: *Command, args: [][]const u8) void {
+fn pushFn(ev: cobra.Exec, _: *Command, args: [][]const u8) void {
+    _ = ev;
     var b: [256]u8 = undefined;
     var ow = std.Io.File.Writer.init(std.Io.File.stdout(), io(), &b);
     const w = &ow.interface;

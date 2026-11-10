@@ -65,7 +65,8 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
-fn rootPersistentPreRun(cmd: *Command, _: [][]const u8) void {
+fn rootPersistentPreRun(ev: cobra.Exec, cmd: *Command, _: [][]const u8) void {
+    _ = ev;
     const st: *types.AppState = @ptrCast(@alignCast(cmd.root().user_data.?));
     const io = @import("std").Io.Threaded.global_single_threaded.*.io();
     var buf: [256]u8 = undefined;

@@ -57,29 +57,26 @@ pub const TmplFunc = struct {
     tmpl: []const u8,
 };
 
-/// Command run function signature: (cmd, args) -> void
-pub const RunFunc = *const fn (cmd: *Command, args: [][]const u8) void;
-/// Fallible run function signature: (cmd, args) -> error!void
-pub const RunEFunc = *const fn (cmd: *Command, args: [][]const u8) anyerror!void;
-/// Custom help function signature: (cmd, args) -> void
-pub const HelpFuncType = *const fn (cmd: *Command, args: [][]const u8) void;
-/// Custom usage function signature: (cmd) -> error!void
-pub const UsageFuncType = *const fn (cmd: *Command) anyerror!void;
-/// Custom flag error handler signature: (cmd, err) -> error!void
-pub const FlagErrorFuncType = *const fn (cmd: *Command, err: anyerror) anyerror!void;
+/// Command run function signature: (ev, cmd, args) -> void
+pub const RunFunc = *const fn (ev: Exec, cmd: *Command, args: [][]const u8) void;
+/// Fallible run function signature: (ev, cmd, args) -> error!void
+pub const RunEFunc = *const fn (ev: Exec, cmd: *Command, args: [][]const u8) anyerror!void;
+/// Custom help function signature: (ev, cmd, args) -> void
+pub const HelpFuncType = *const fn (ev: Exec, cmd: *Command, args: [][]const u8) void;
+/// Custom usage function signature: (ev, cmd) -> error!void
+pub const UsageFuncType = *const fn (ev: Exec, cmd: *Command) anyerror!void;
+/// Custom flag error handler signature: (ev, cmd, err) -> error!void
+pub const FlagErrorFuncType = *const fn (ev: Exec, cmd: *Command, err: anyerror) anyerror!void;
 
-/// Value-semantics execution environment, constructed at execute() entry.
-/// Zig has no closures, so library-internal callbacks (help / completion script
-/// generators / __complete) receive io + allocator through this instead of
-/// process-global staging. Public user-facing callbacks deliberately do NOT take
-/// it — Go parity keeps RunFunc/RunEFunc/hook signatures unchanged.
+/// Value-semantics execution environment threaded into every side-effect callback.
+/// Zig has no closures: what Go expresses by capturing the surrounding scope
+/// (printing, allocating inside Run/RunE/hooks) is passed explicitly here instead.
+/// Constructed once at execute() entry; the same value reaches user callbacks and
+/// library-internal commands through an identical signature (single channel).
 pub const Exec = struct {
     io: std.Io,
     gpa: std.mem.Allocator,
 };
-
-/// Library-internal run dispatch signature (see Command.internal_run_e).
-const InternalRunFn = *const fn (ev: Exec, cmd: *Command, args: [][]const u8) anyerror!void;
 
 /// Fallback stdout writer used when no out_writer is configured.
 var fallback_out: ?std.Io.File.Writer = null;
@@ -263,10 +260,6 @@ pub const Command = struct {
     owned_group_keys: std.ArrayListUnmanaged([]u8) = .empty,
     /// Boolean storage for library-internal flags (e.g. completion --no-descriptions)
     internal_flag_bool: bool = false,
-    /// Run path for library-internal commands (help / completion / __complete).
-    /// Receives the execution environment as a direct parameter — no global staging.
-    /// Public run/run_e keep priority if a user assigns them on these commands (Go parity).
-    internal_run_e: ?InternalRunFn = null,
     /// Detailed error message buffer (validation messages mirror Go's error strings)
     err_msg_buf: [2048]u8 = undefined,
     err_msg_len: usize = 0,
@@ -410,7 +403,7 @@ pub const Command = struct {
     }
 
     pub fn runnable(self: *const Command) bool {
-        return self.run != null or self.run_e != null or self.internal_run_e != null;
+        return self.run != null or self.run_e != null;
     }
     pub fn hasSubCommands(self: *const Command) bool {
         return self.commands.items.len > 0;
@@ -669,6 +662,7 @@ pub const Command = struct {
     // ─── Execution (Go command.go execute() order) ───
 
     pub fn execute(self: *Command, io: std.Io, gpa: std.mem.Allocator, a: []const []const u8) anyerror!void {
+        const ev = Exec{ .io = io, .gpa = gpa };
         if (self.deprecated.len > 0) {
             self.printErr(io, "Command \"{s}\" is deprecated, {s}\n", .{ self.name(), self.deprecated });
         }
@@ -682,13 +676,13 @@ pub const Command = struct {
             self.mergePersistentFlags(gpa);
             self.parseArgs(gpa, a) catch |err| {
                 if (err == error.Help) {
-                    self.printHelp(io);
+                    self.printHelp(ev);
                     return;
                 }
                 if (self.flag_error_func) |f| {
-                    f(self, err) catch {};
+                    f(ev, self, err) catch {};
                 }
-                try self.handleExecError(io, err);
+                try self.handleExecError(ev, err);
                 return err;
             };
             arg_wo_flags = self.flags_ptr.?.argList();
@@ -698,7 +692,7 @@ pub const Command = struct {
         const help_requested = self.help_flag_value or
             (if (self.flags_ptr) |fs| (fs.getBool(help_flag_name) catch false) else false);
         if (help_requested) {
-            self.printHelp(io);
+            self.printHelp(ev);
             return;
         }
 
@@ -717,7 +711,7 @@ pub const Command = struct {
         // Go parity: non-runnable command invocation prints help and skips
         // initializers/hooks/validation entirely (Go's execute() returns flag.ErrHelp here).
         if (!self.runnable()) {
-            self.printHelp(io);
+            self.printHelp(ev);
             return;
         }
 
@@ -725,65 +719,56 @@ pub const Command = struct {
         defer @import("cobra.zig").runFinalizers();
 
         self.validateArgs(arg_wo_flags) catch |err| {
-            try self.handleExecError(io, err);
+            try self.handleExecError(ev, err);
             return err;
         };
 
         const hook_args: [][]const u8 = @constCast(arg_wo_flags);
 
-        self.execPersistentPreRun(hook_args) catch |err| {
-            try self.handleExecError(io, err);
+        self.execPersistentPreRun(ev, hook_args) catch |err| {
+            try self.handleExecError(ev, err);
             return err;
         };
         if (self.pre_run_e) |f| {
-            f(self, hook_args) catch |err| {
-                try self.handleExecError(io, err);
+            f(ev, self, hook_args) catch |err| {
+                try self.handleExecError(ev, err);
                 return err;
             };
         } else if (self.pre_run) |f| {
-            f(self, hook_args);
+            f(ev, self, hook_args);
         }
 
         self.validateRequiredFlags() catch |err| {
-            try self.handleExecError(io, err);
+            try self.handleExecError(ev, err);
             return err;
         };
         self.validateFlagGroups() catch |err| {
-            try self.handleExecError(io, err);
+            try self.handleExecError(ev, err);
             return err;
         };
 
         if (self.run_e) |f| {
-            f(self, hook_args) catch |err| {
-                try self.handleExecError(io, err);
+            f(ev, self, hook_args) catch |err| {
+                try self.handleExecError(ev, err);
                 return err;
             };
         } else if (self.run) |f| {
-            f(self, hook_args);
-        } else if (self.internal_run_e) |f| {
-            // Library-internal commands (help/completion/__complete): io+gpa threaded
-            // directly through Exec. User-assigned run/run_e above keep priority.
-            const ev = Exec{ .io = io, .gpa = gpa };
-            f(ev, self, hook_args) catch |err| {
-                try self.handleExecError(io, err);
-                return err;
-            };
+            f(ev, self, hook_args);
         } else {
-            // Unreachable: the runnable() gate above guarantees run, run_e or
-            // internal_run_e is set.
+            // Unreachable: the runnable() gate above guarantees run or run_e is set.
             @panic("cobra: execute() reached dispatch with non-runnable command");
         }
 
         if (self.post_run_e) |f| {
-            f(self, hook_args) catch |err| {
-                try self.handleExecError(io, err);
+            f(ev, self, hook_args) catch |err| {
+                try self.handleExecError(ev, err);
                 return err;
             };
         } else if (self.post_run) |f| {
-            f(self, hook_args);
+            f(ev, self, hook_args);
         }
-        self.execPersistentPostRun(hook_args) catch |err| {
-            try self.handleExecError(io, err);
+        self.execPersistentPostRun(ev, hook_args) catch |err| {
+            try self.handleExecError(ev, err);
             return err;
         };
     }
@@ -801,16 +786,16 @@ pub const Command = struct {
 
     /// Prints "Error: <msg>" (unless silenced) and usage (unless silenced),
     /// preferring the detailed message staged in err_msg_buf.
-    fn handleExecError(self: *Command, io: std.Io, err: anyerror) anyerror!void {
+    fn handleExecError(self: *Command, ev: Exec, err: anyerror) anyerror!void {
         if (!self.silence_errors) {
             if (self.err_msg_len > 0) {
-                self.printErr(io, "{s} {s}\n", .{ self.errPrefix(), self.err_msg_buf[0..self.err_msg_len] });
+                self.printErr(ev.io, "{s} {s}\n", .{ self.errPrefix(), self.err_msg_buf[0..self.err_msg_len] });
             } else {
-                self.printErr(io, "{s} {s}\n", .{ self.errPrefix(), @errorName(err) });
+                self.printErr(ev.io, "{s} {s}\n", .{ self.errPrefix(), @errorName(err) });
             }
         }
         self.err_msg_len = 0;
-        if (!self.silence_usage) self.printUsage(io);
+        if (!self.silence_usage) self.printUsage(ev);
     }
 
     /// Stages a detailed error message (Go-style error text) into err_msg_buf.
@@ -825,28 +810,28 @@ pub const Command = struct {
     /// Go parity: only the NEAREST command defining a persistent run hook executes it,
     /// unless cobra.enable_traverse_run_hooks is enabled (then the whole chain runs).
     /// Hooks receive the executing command (self), like Go does.
-    fn execPersistentPreRun(self: *Command, args: [][]const u8) anyerror!void {
+    fn execPersistentPreRun(self: *Command, ev: Exec, args: [][]const u8) anyerror!void {
         const traverse_hooks = @import("cobra.zig").enable_traverse_run_hooks;
         var c: ?*Command = self;
         while (c) |p| : (c = p.parent) {
             if (p.persistent_pre_run_e) |f| {
-                try f(self, args);
+                try f(ev, self, args);
                 if (!traverse_hooks) return;
             } else if (p.persistent_pre_run) |f| {
-                f(self, args);
+                f(ev, self, args);
                 if (!traverse_hooks) return;
             }
         }
     }
-    fn execPersistentPostRun(self: *Command, args: [][]const u8) anyerror!void {
+    fn execPersistentPostRun(self: *Command, ev: Exec, args: [][]const u8) anyerror!void {
         const traverse_hooks = @import("cobra.zig").enable_traverse_run_hooks;
         var c: ?*Command = self;
         while (c) |p| : (c = p.parent) {
             if (p.persistent_post_run_e) |f| {
-                try f(self, args);
+                try f(ev, self, args);
                 if (!traverse_hooks) return;
             } else if (p.persistent_post_run) |f| {
-                f(self, args);
+                f(ev, self, args);
                 if (!traverse_hooks) return;
             }
         }
@@ -855,21 +840,21 @@ pub const Command = struct {
     // ─── Help / Usage rendering (Go template output parity) ───
 
     /// Displays the help for this command (Go: Help()).
-    pub fn help(self: *Command, io: std.Io) anyerror!void {
+    pub fn help(self: *Command, ev: Exec) anyerror!void {
         if (self.helpFunc()) |f| {
-            f(self, &.{});
+            f(ev, self, &.{});
             return;
         }
-        self.printHelp(io);
+        self.printHelp(ev);
     }
 
     /// Renders full help (description + usage) to errOrStderr (Go: Help() writes to OutOrStderr).
-    pub fn printHelp(self: *Command, io: std.Io) void {
+    pub fn printHelp(self: *Command, ev: Exec) void {
         if (self.help_func) |f| {
-            f(self, &.{});
+            f(ev, self, &.{});
             return;
         }
-        const w = self.errOrStderr(io);
+        const w = self.errOrStderr(ev.io);
         const desc = self.description();
         if (desc.len > 0) {
             const trimmed = trimEnd(desc);
@@ -888,12 +873,12 @@ pub const Command = struct {
     }
 
     /// Renders the usage block (Go's default usage template output).
-    pub fn printUsage(self: *Command, io: std.Io) void {
+    pub fn printUsage(self: *Command, ev: Exec) void {
         if (self.usage_func) |f| {
-            f(self) catch {};
+            f(ev, self) catch {};
             return;
         }
-        const w = self.errOrStderr(io);
+        const w = self.errOrStderr(ev.io);
         self.renderUsage(w);
         w.flush() catch {};
     }
@@ -1061,6 +1046,7 @@ pub const Command = struct {
         const found = self.findForExec(gpa, self.args_slice);
         defer if (found.owned_args) |a| gpa.free(a);
         const cmd = found.cmd;
+        const ev = Exec{ .io = io, .gpa = gpa };
         if (found.err) |e| {
             if (!cmd.silence_errors) {
                 if (cmd.err_msg_len > 0) {
@@ -1070,7 +1056,7 @@ pub const Command = struct {
                 }
             }
             cmd.err_msg_len = 0;
-            if (!cmd.silence_usage) cmd.printUsage(io);
+            if (!cmd.silence_usage) cmd.printUsage(ev);
             return e;
         }
         return cmd.execute(io, gpa, found.args);
@@ -1177,7 +1163,7 @@ pub const Command = struct {
             hc.* = .{
                 .use = "help [command]",
                 .short = "Help about any command",
-                .internal_run_e = helpCommandRun,
+                .run_e = helpCommandRun,
                 .hidden = false,
             };
             // `long` needs stable storage — render into the heap-owned command's own buffer.
@@ -1223,7 +1209,7 @@ pub const Command = struct {
         // Go parity: Help() renders LocalFlags(), which lazily merges persistent and
         // inherited views. This command never ran its own execute(), so merge here.
         found.cmd.mergePersistentFlags(gpa);
-        found.cmd.printHelp(io);
+        found.cmd.printHelp(ev);
     }
 
     /// Creates the default `completion` command with bash/zsh/fish/powershell children
@@ -1255,7 +1241,7 @@ pub const Command = struct {
         if (self.completion_command_group_id.len > 0) parent.group_id = self.completion_command_group_id;
         self.trackInternal(gpa, parent);
 
-        const defs = [_]struct { use: []const u8, short: []const u8, f: InternalRunFn, no_desc_flag: bool }{
+        const defs = [_]struct { use: []const u8, short: []const u8, f: RunEFunc, no_desc_flag: bool }{
             .{ .use = "bash", .short = "Generate the autocompletion script for bash", .f = completionBashRun, .no_desc_flag = true },
             .{ .use = "zsh", .short = "Generate the autocompletion script for zsh", .f = completionZshRun, .no_desc_flag = true },
             .{ .use = "fish", .short = "Generate the autocompletion script for fish", .f = completionFishRun, .no_desc_flag = true },
@@ -1266,7 +1252,7 @@ pub const Command = struct {
             c.* = .{
                 .use = d.use,
                 .short = d.short,
-                .internal_run_e = d.f,
+                .run_e = d.f,
                 .args_validator = @import("args.zig").noArgs(),
                 .valid_args_function = completions_mod.noFileCompletions(),
             };
@@ -1331,7 +1317,7 @@ pub const Command = struct {
             .hidden = true,
             .disable_flag_parsing = true,
             .args_validator = @import("args.zig").minimumNArgs(1),
-            .internal_run_e = completeCmdRun,
+            .run_e = completeCmdRun,
         };
         self.trackInternal(gpa, complete);
         self.addCommand(gpa, &.{complete});
