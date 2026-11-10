@@ -17,7 +17,12 @@ pub fn main(init: std.process.Init) !void {
     var helloCmd = cobra.Command{
         .use = "hello",
         .short = "Say hello to someone",
-        .run = helloRun,
+        // Exec feature demo: internal_run_e receives the execution environment
+        // (io + allocator) that execute() assembled, as an explicit call
+        // parameter — the Zig "manual closure". Output goes through cmd.print,
+        // so setOut()/redirected writers keep working, and the boilerplate
+        // (global Io fetch, File.Writer, manual flush) below disappears.
+        .internal_run_e = helloRun,
         .flags_ptr = &hello_flags,
     };
     // helloCmd.flags(gpa).boolVar(p: *bool, name: []const u8, value: bool, usage: []const u8)
@@ -39,16 +44,11 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
-fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
+fn helloRun(ev: cobra.command_mod.Exec, cmd: *cobra.Command, args: [][]const u8) anyerror!void {
     _ = args;
     const state: *HelloState = @ptrCast(@alignCast(cmd.user_data.?));
-    const io = @import("std").Io.Threaded.global_single_threaded.*.io();
-    var buf: [128]u8 = undefined;
-    var stdout_w = std.Io.File.Writer.init(std.Io.File.stdout(), io, &buf);
-    const w = &stdout_w.interface;
-    w.print("hello {s}\n", .{state.name}) catch {};
+    cmd.print(ev.io, "hello {s}\n", .{state.name});
     if (state.age != 0) {
-        w.print("you are {d} years old\n", .{state.age}) catch {};
+        cmd.print(ev.io, "you are {d} years old\n", .{state.age});
     }
-    stdout_w.flush() catch {};
 }
