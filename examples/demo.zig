@@ -2,7 +2,7 @@ const std = @import("std");
 const cobra = @import("cobra");
 const pflag = cobra.command_mod.pflag;
 
-const HelloState = struct { name: []const u8 = "world" };
+const HelloState = struct { name: []const u8 = "world", age: i32 = 0 };
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -12,6 +12,7 @@ pub fn main(init: std.process.Init) !void {
     var hello_flags = pflag.FlagSet.init(gpa, "hello");
     defer hello_flags.deinit();
     hello_flags.stringVarP(&state.name, "name", "n", "world", "your name") catch {};
+    hello_flags.intVarP(i32, &state.age, "age", "a", 0, "your age") catch {};
 
     var helloCmd = cobra.Command{
         .use = "hello",
@@ -19,6 +20,7 @@ pub fn main(init: std.process.Init) !void {
         .run = helloRun,
         .flags_ptr = &hello_flags,
     };
+    // helloCmd.flags(gpa).boolVar(p: *bool, name: []const u8, value: bool, usage: []const u8)
     helloCmd.user_data = @ptrCast(@alignCast(&state));
 
     var rootCmd = cobra.Command{
@@ -45,5 +47,8 @@ fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
     var stdout_w = std.Io.File.Writer.init(std.Io.File.stdout(), io, &buf);
     const w = &stdout_w.interface;
     w.print("hello {s}\n", .{state.name}) catch {};
+    if (state.age != 0) {
+        w.print("you are {d} years old\n", .{state.age}) catch {};
+    }
     stdout_w.flush() catch {};
 }
