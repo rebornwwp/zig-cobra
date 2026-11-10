@@ -3,6 +3,7 @@ const std = @import("std");
 const Command = @import("command.zig").Command;
 const args_mod = @import("args.zig");
 const TestHelper = @import("test_helper.zig");
+const gpa = std.testing.allocator;
 
 fn getCommand(args_validator: args_mod.PositionalArgs, with_valid: bool) !Command {
     var cmd = Command{
@@ -119,4 +120,106 @@ test "legacyArgs - no subcommands accepts any args" {
     var cmd = Command{ .use = "c", .args_validator = args_mod.legacyArgs(), .run = TestHelper.emptyRun };
     const result = cmd.args_validator.?.validate(&cmd, &.{"anything"});
     try std.testing.expectEqual({}, result);
+}
+
+// OnlyValidArgs tests
+
+test "OnlyValidArgs - valid args succeeds" {
+    var cmd = try getCommand(args_mod.onlyValidArgs(), true);
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "one", "two" });
+    try std.testing.expectEqual({}, result);
+}
+
+test "OnlyValidArgs - invalid arg errors" {
+    var cmd = try getCommand(args_mod.onlyValidArgs(), true);
+    const result = cmd.args_validator.?.validate(&cmd, &.{"a"}) catch |err| err;
+    try std.testing.expectEqual(error.InvalidArg, result);
+}
+
+// NoDuplicateArgs with ValidArgs combinations
+
+test "NoDuplicateArgs with ValidArgs - duplicate errors" {
+    var cmd = try getCommand(args_mod.noDuplicateArgs(), true);
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "one", "one" }) catch |err| err;
+    try std.testing.expectEqual(error.DuplicateArg, result);
+}
+
+test "MatchAll(OnlyValidArgs, NoDuplicateArgs) - invalid arg errors first" {
+    const validators = [_]args_mod.PositionalArgs{ args_mod.onlyValidArgs(), args_mod.noDuplicateArgs() };
+    var cmd = try getCommand(args_mod.matchAll(&validators), true);
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "a", "a" }) catch |err| err;
+    try std.testing.expectEqual(error.InvalidArg, result);
+}
+
+// ExactValidArgs tests
+
+test "ExactValidArgs - correct count with valid args succeeds" {
+    const validators = [_]args_mod.PositionalArgs{ args_mod.exactArgs(2), args_mod.onlyValidArgs() };
+    var cmd = try getCommand(args_mod.matchAll(&validators), true);
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "one", "two" });
+    try std.testing.expectEqual({}, result);
+}
+
+test "ExactValidArgs - wrong count errors" {
+    const validators = [_]args_mod.PositionalArgs{ args_mod.exactArgs(2), args_mod.onlyValidArgs() };
+    var cmd = try getCommand(args_mod.matchAll(&validators), true);
+    const result = cmd.args_validator.?.validate(&cmd, &.{"one"}) catch |err| err;
+    try std.testing.expectEqual(error.ArgsCount, result);
+}
+
+test "ExactValidArgs - invalid arg errors" {
+    const validators = [_]args_mod.PositionalArgs{ args_mod.exactArgs(2), args_mod.onlyValidArgs() };
+    var cmd = try getCommand(args_mod.matchAll(&validators), true);
+    const result = cmd.args_validator.?.validate(&cmd, &.{ "one", "invalid" }) catch |err| err;
+    try std.testing.expectEqual(error.InvalidArg, result);
+}
+
+// Root/Child Takes No/Some Args - integration tests via executeCommand
+
+test "RootTakesNoArgs - errors with args" {
+    var rootCmd = Command{
+        .use = "root",
+        .args_validator = args_mod.noArgs(),
+        .run = TestHelper.emptyRun,
+    };
+    defer rootCmd.deinit(gpa);
+    const out = try TestHelper.executeCommand(gpa, &rootCmd, &.{"extra"});
+    try std.testing.expect(out.err != null);
+}
+
+test "RootTakesArgs - accepts args with ArbitraryArgs" {
+    var rootCmd = Command{
+        .use = "root",
+        .args_validator = args_mod.arbitraryArgs(),
+        .run = TestHelper.emptyRun,
+    };
+    defer rootCmd.deinit(gpa);
+    const out = try TestHelper.executeCommand(gpa, &rootCmd, &.{ "a", "b", "c" });
+    try std.testing.expect(out.err == null);
+}
+
+test "ChildTakesNoArgs - child with NoArgs rejects extra args" {
+    var rootCmd = Command{ .use = "root", .run = TestHelper.emptyRun };
+    var childCmd = Command{
+        .use = "child",
+        .args_validator = args_mod.noArgs(),
+        .run = TestHelper.emptyRun,
+    };
+    rootCmd.addCommand(gpa, &.{&childCmd});
+    defer rootCmd.deinit(gpa);
+    const out = try TestHelper.executeCommand(gpa, &rootCmd, &.{ "child", "extra" });
+    try std.testing.expect(out.err != null);
+}
+
+test "ChildTakesArgs - child with ArbitraryArgs accepts args" {
+    var rootCmd = Command{ .use = "root", .run = TestHelper.emptyRun };
+    var childCmd = Command{
+        .use = "child",
+        .args_validator = args_mod.arbitraryArgs(),
+        .run = TestHelper.emptyRun,
+    };
+    rootCmd.addCommand(gpa, &.{&childCmd});
+    defer rootCmd.deinit(gpa);
+    const out = try TestHelper.executeCommand(gpa, &rootCmd, &.{ "child", "a", "b" });
+    try std.testing.expect(out.err == null);
 }
