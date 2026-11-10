@@ -6,7 +6,7 @@ Zig 0.17.0 CLI framework ported from Go's spf13/cobra. Depends on zig-pflag for 
 
 ```bash
 zig build                    # Build library
-zig build test               # Run all tests (145 tests)
+zig build test               # Run all tests (208 tests)
 zig build run-demo -- --help # Run simple demo
 zig build run-dockr -- --help # Run Docker-style demo
 zig fmt --check src/ examples/ build.zig  # Check formatting
@@ -39,6 +39,7 @@ Do NOT use `.path` or tarball URLs. Only `git+https://` format works correctly w
 
 - **Zig 0.17.0 only** - Uses new build system (configurer/maker separation), `@backingInt`/`@fromBackingInt`, `SafeAllocator`
 - **Stack-lifetime Commands** - User Command instances must not be heap-allocated (exception: library-internal `help`/`completion`/`__complete` commands are heap-allocated via gpa and freed in `deinit(gpa)`)
+- **No global execution state** - Internal commands receive `Exec{ io, gpa }` as a parameter via `Command.internal_run_e` (set only by library init). Public `RunFunc`/`RunEFunc`/hook signatures take no environment parameter (Go parity) and must not reintroduce any module-level io/allocator staging
 - **Test pattern** - Tests use `std.testing.allocator`, not custom allocators
 - **Module exposure** - Library uses `b.addModule()` in build.zig, dependencies access via `dep.module()`
 
