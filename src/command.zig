@@ -1911,7 +1911,12 @@ pub const Command = struct {
     }
 
     fn flagTakesValue(f: ?*pflag.Flag) bool {
-        const fl = f orelse return false; // Unknown flag: Go assumes it takes no value.
+        // Go parity (stripFlags): unknown flags are ASSUMED to take a value -
+        // hasNoOptDefVal() returns false for missing flags, so the next argument
+        // is consumed. e.g. root with Version "1.0.0" and args ["--version", "sub"]:
+        // "sub" is consumed at find() time (--version is not yet registered), so the
+        // root command wins and prints the version (Go TestVersionFlagExecutedOnSubcommand).
+        const fl = f orelse return true;
         return fl.no_opt_def_val.len == 0;
     }
 
