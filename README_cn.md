@@ -106,10 +106,31 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
-fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
+fn helloRun(ev: cobra.Exec, cmd: *cobra.Command, args: [][]const u8) void {
     _ = args;
     const app: *App = @ptrCast(@alignCast(cmd.user_data.?));
-    std.debug.print("hello {s}\n", .{app.name});
+    cmd.print(ev.io, "hello {s}\n", .{app.name});
+}
+```
+
+### 回调签名与 Exec（Zig 原生化设计）
+
+Go 用闭包捕获外层变量来表达"run 函数需要什么"。Zig 的函数指针没有闭包，
+因此 cobra-zig 把执行环境（`cobra.Exec` = `io` + `gpa`）作为**显式第一参数**
+注入所有会产生副作用的回调：`RunFunc`、`RunEFunc`、全部 pre/post hooks，
+以及 help / usage / flag-error 自定义覆盖。用不到的回调直接忽略即可（`_ = ev;`）。
+
+纯数据回调保持 Go 的精简形状、**不接收** `Exec`：
+`args` 校验器（`PositionalArgs`）和补全函数（`CompletionFunc`）。
+
+```zig
+// 带环境访问、可返回错误的 run：
+fn deployRun(ev: cobra.Exec, cmd: *cobra.Command, args: [][]const u8) anyerror!void {
+    if (args.len == 0) {
+        cmd.printErr(ev.io, "缺少目标\n", .{});
+        return error.MissingTarget; // execute() 会走统一错误处理路径
+    }
+    cmd.print(ev.io, "正在部署到 {s}\n", .{args[0]});
 }
 ```
 

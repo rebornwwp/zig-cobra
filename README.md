@@ -108,10 +108,32 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
-fn helloRun(cmd: *cobra.Command, args: [][]const u8) void {
+fn helloRun(ev: cobra.Exec, cmd: *cobra.Command, args: [][]const u8) void {
     _ = args;
     const app: *App = @ptrCast(@alignCast(cmd.user_data.?));
-    std.debug.print("hello {s}\n", .{app.name});
+    cmd.print(ev.io, "hello {s}\n", .{app.name});
+}
+```
+
+### Callback Signatures (Zig-native Exec)
+
+Go expresses "what a run function needs" with closures capturing the surrounding
+scope. Zig function pointers have no closures, so cobra-zig threads the execution
+environment (`cobra.Exec` = `io` + `gpa`) as an explicit **first parameter** of every
+side-effect callback: `RunFunc`, `RunEFunc`, all pre/post hooks, and the help / usage /
+flag-error overrides. What a callback does not need is simply ignored (`_ = ev;`).
+
+Pure-data callbacks keep the lean Go shape and take **no** `Exec`:
+`args` validators (`PositionalArgs`) and completion functions (`CompletionFunc`).
+
+```zig
+// Error-returning run with environment access:
+fn deployRun(ev: cobra.Exec, cmd: *cobra.Command, args: [][]const u8) anyerror!void {
+    if (args.len == 0) {
+        cmd.printErr(ev.io, "missing target\n", .{});
+        return error.MissingTarget; // execute() routes it through the error path
+    }
+    cmd.print(ev.io, "deploying to {s}\n", .{args[0]});
 }
 ```
 
