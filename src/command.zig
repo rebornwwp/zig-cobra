@@ -68,13 +68,18 @@ pub const UsageFuncType = *const fn (cmd: *Command) anyerror!void;
 /// Custom flag error handler signature: (cmd, err) -> error!void
 pub const FlagErrorFuncType = *const fn (cmd: *Command, err: anyerror) anyerror!void;
 
-/// Execution state shared with library-internal commands (help, completion).
-/// Zig has no closures, so io/gpa for internal command callbacks are staged here by
-/// execute()/executeWrapper() before dispatch. Single-threaded CLI use only.
-var exec_state: struct {
-    io: ?std.Io = null,
-    gpa: ?std.mem.Allocator = null,
-} = .{};
+/// Value-semantics execution environment, constructed at execute() entry.
+/// Zig has no closures, so library-internal callbacks (help / completion script
+/// generators / __complete) receive io + allocator through this instead of
+/// process-global staging. Public user-facing callbacks deliberately do NOT take
+/// it — Go parity keeps RunFunc/RunEFunc/hook signatures unchanged.
+pub const Exec = struct {
+    io: std.Io,
+    gpa: std.mem.Allocator,
+};
+
+/// Library-internal run dispatch signature (see Command.internal_run_e).
+const InternalRunFn = *const fn (ev: Exec, cmd: *Command, args: [][]const u8) anyerror!void;
 
 /// Fallback stdout writer used when no out_writer is configured.
 var fallback_out: ?std.Io.File.Writer = null;
@@ -258,6 +263,10 @@ pub const Command = struct {
     owned_group_keys: std.ArrayListUnmanaged([]u8) = .empty,
     /// Boolean storage for library-internal flags (e.g. completion --no-descriptions)
     internal_flag_bool: bool = false,
+    /// Run path for library-internal commands (help / completion / __complete).
+    /// Receives the execution environment as a direct parameter — no global staging.
+    /// Public run/run_e keep priority if a user assigns them on these commands (Go parity).
+    internal_run_e: ?InternalRunFn = null,
     /// Detailed error message buffer (validation messages mirror Go's error strings)
     err_msg_buf: [2048]u8 = undefined,
     err_msg_len: usize = 0,
@@ -401,7 +410,7 @@ pub const Command = struct {
     }
 
     pub fn runnable(self: *const Command) bool {
-        return self.run != null or self.run_e != null;
+        return self.run != null or self.run_e != null or self.internal_run_e != null;
     }
     pub fn hasSubCommands(self: *const Command) bool {
         return self.commands.items.len > 0;
@@ -660,7 +669,6 @@ pub const Command = struct {
     // ─── Execution (Go command.go execute() order) ───
 
     pub fn execute(self: *Command, io: std.Io, gpa: std.mem.Allocator, a: []const []const u8) anyerror!void {
-        exec_state = .{ .io = io, .gpa = gpa };
         if (self.deprecated.len > 0) {
             self.printErr(io, "Command \"{s}\" is deprecated, {s}\n", .{ self.name(), self.deprecated });
         }
@@ -752,8 +760,17 @@ pub const Command = struct {
             };
         } else if (self.run) |f| {
             f(self, hook_args);
+        } else if (self.internal_run_e) |f| {
+            // Library-internal commands (help/completion/__complete): io+gpa threaded
+            // directly through Exec. User-assigned run/run_e above keep priority.
+            const ev = Exec{ .io = io, .gpa = gpa };
+            f(ev, self, hook_args) catch |err| {
+                try self.handleExecError(io, err);
+                return err;
+            };
         } else {
-            // Unreachable: the runnable() gate above guarantees run or run_e is set.
+            // Unreachable: the runnable() gate above guarantees run, run_e or
+            // internal_run_e is set.
             @panic("cobra: execute() reached dispatch with non-runnable command");
         }
 
@@ -925,8 +942,9 @@ pub const Command = struct {
             }
         }
 
-        // Build merged local/inherited views when an allocator is available.
-        if (exec_state.gpa) |g| self.mergePersistentFlags(g);
+        // Merged local/inherited views: execute() already called mergePersistentFlags
+        // before parsing; renderings reached from the public zero-arg API fall through
+        // to the unmerged fallback below (own flags + own persistent).
 
         // Flags: (local = own flags + own persistent, excluding inherited)
         if (self.hasAvailableLocalFlags()) {
@@ -1034,7 +1052,6 @@ pub const Command = struct {
     /// help/completion commands, reports errors with usage, and executes.
     pub fn executeWrapper(self: *Command, gpa: std.mem.Allocator) anyerror!void {
         const io = std.Io.Threaded.global_single_threaded.*.io();
-        exec_state = .{ .io = io, .gpa = gpa };
 
         self.initDefaultHelpCmd(gpa);
         self.initDefaultCompletionCmd(gpa);
@@ -1160,7 +1177,7 @@ pub const Command = struct {
             hc.* = .{
                 .use = "help [command]",
                 .short = "Help about any command",
-                .run_e = helpCommandRun,
+                .internal_run_e = helpCommandRun,
                 .hidden = false,
             };
             // `long` needs stable storage — render into the heap-owned command's own buffer.
@@ -1186,9 +1203,9 @@ pub const Command = struct {
         return false;
     }
 
-    fn helpCommandRun(cmd: *Command, args: [][]const u8) anyerror!void {
-        const io = exec_state.io orelse return error.NoIoState;
-        const gpa = exec_state.gpa orelse return error.NoGpaState;
+    fn helpCommandRun(ev: Exec, cmd: *Command, args: [][]const u8) anyerror!void {
+        const io = ev.io;
+        const gpa = ev.gpa;
         const r = cmd.root();
         const found = r.find(gpa, args);
         defer if (found.owned_args) |a| gpa.free(a);
@@ -1203,6 +1220,9 @@ pub const Command = struct {
             return;
         }
         found.cmd.initDefaultHelpFlag(gpa);
+        // Go parity: Help() renders LocalFlags(), which lazily merges persistent and
+        // inherited views. This command never ran its own execute(), so merge here.
+        found.cmd.mergePersistentFlags(gpa);
         found.cmd.printHelp(io);
     }
 
@@ -1235,7 +1255,7 @@ pub const Command = struct {
         if (self.completion_command_group_id.len > 0) parent.group_id = self.completion_command_group_id;
         self.trackInternal(gpa, parent);
 
-        const defs = [_]struct { use: []const u8, short: []const u8, f: RunFunc, no_desc_flag: bool }{
+        const defs = [_]struct { use: []const u8, short: []const u8, f: InternalRunFn, no_desc_flag: bool }{
             .{ .use = "bash", .short = "Generate the autocompletion script for bash", .f = completionBashRun, .no_desc_flag = true },
             .{ .use = "zsh", .short = "Generate the autocompletion script for zsh", .f = completionZshRun, .no_desc_flag = true },
             .{ .use = "fish", .short = "Generate the autocompletion script for fish", .f = completionFishRun, .no_desc_flag = true },
@@ -1246,7 +1266,7 @@ pub const Command = struct {
             c.* = .{
                 .use = d.use,
                 .short = d.short,
-                .run = d.f,
+                .internal_run_e = d.f,
                 .args_validator = @import("args.zig").noArgs(),
                 .valid_args_function = completions_mod.noFileCompletions(),
             };
@@ -1265,30 +1285,30 @@ pub const Command = struct {
         return !cmd.internal_flag_bool and !cmd.root().completion_options.disable_descriptions;
     }
 
-    fn completionBashRun(cmd: *Command, args: [][]const u8) void {
+    fn completionBashRun(ev: Exec, cmd: *Command, args: [][]const u8) anyerror!void {
         _ = args;
-        const io = exec_state.io orelse return;
+        const io = ev.io;
         const w = cmd.outOrStdout(io);
         completions_mod.genBashCompletionV2(cmd.root(), w, completionIncludeDesc(cmd)) catch {};
         w.flush() catch {};
     }
-    fn completionZshRun(cmd: *Command, args: [][]const u8) void {
+    fn completionZshRun(ev: Exec, cmd: *Command, args: [][]const u8) anyerror!void {
         _ = args;
-        const io = exec_state.io orelse return;
+        const io = ev.io;
         const w = cmd.outOrStdout(io);
         completions_mod.genZshCompletion(cmd.root(), w, completionIncludeDesc(cmd)) catch {};
         w.flush() catch {};
     }
-    fn completionFishRun(cmd: *Command, args: [][]const u8) void {
+    fn completionFishRun(ev: Exec, cmd: *Command, args: [][]const u8) anyerror!void {
         _ = args;
-        const io = exec_state.io orelse return;
+        const io = ev.io;
         const w = cmd.outOrStdout(io);
         completions_mod.genFishCompletion(cmd.root(), w, completionIncludeDesc(cmd)) catch {};
         w.flush() catch {};
     }
-    fn completionPowerShellRun(cmd: *Command, args: [][]const u8) void {
+    fn completionPowerShellRun(ev: Exec, cmd: *Command, args: [][]const u8) anyerror!void {
         _ = args;
-        const io = exec_state.io orelse return;
+        const io = ev.io;
         const w = cmd.outOrStdout(io);
         completions_mod.genPowerShellCompletion(cmd.root(), w, completionIncludeDesc(cmd)) catch {};
         w.flush() catch {};
@@ -1311,20 +1331,18 @@ pub const Command = struct {
             .hidden = true,
             .disable_flag_parsing = true,
             .args_validator = @import("args.zig").minimumNArgs(1),
-            .run_e = completeCmdRun,
+            .internal_run_e = completeCmdRun,
         };
         self.trackInternal(gpa, complete);
         self.addCommand(gpa, &.{complete});
     }
 
-    fn completeCmdRun(cmd: *Command, args: [][]const u8) anyerror!void {
+    fn completeCmdRun(ev: Exec, cmd: *Command, args: [][]const u8) anyerror!void {
         const with_desc = !std.mem.eql(u8, cmd.calledAs(), completions_mod.shell_comp_no_desc_request_cmd);
-        try runCompletionRequest(cmd, args, with_desc);
+        try runCompletionRequest(ev, cmd, args, with_desc);
     }
-    fn runCompletionRequest(cmd: *Command, args: [][]const u8, with_desc: bool) anyerror!void {
-        const io = exec_state.io orelse return error.NoIoState;
-        const gpa = exec_state.gpa orelse return error.NoGpaState;
-        try completions_mod.getCompletions(cmd.root(), io, gpa, args, with_desc);
+    fn runCompletionRequest(ev: Exec, cmd: *Command, args: [][]const u8, with_desc: bool) anyerror!void {
+        try completions_mod.getCompletions(cmd.root(), ev.io, ev.gpa, args, with_desc);
     }
 
     /// Validates that every child command's group_id is a registered group (Go panics on misuse).
