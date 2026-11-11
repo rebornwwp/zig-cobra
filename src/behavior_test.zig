@@ -6,6 +6,9 @@ const std = @import("std");
 const cobra = @import("cobra.zig");
 const command_mod = @import("command.zig");
 const Command = command_mod.Command;
+const RunFunc = command_mod.RunFunc;
+const RunEFunc = command_mod.RunEFunc;
+const Exec = command_mod.Exec;
 const pflag = command_mod.pflag;
 const completions = @import("completions.zig");
 const shell_completions = @import("shell_completions.zig");
@@ -17,7 +20,8 @@ const emptyRun = TestHelper.emptyRun;
 // ─── Shared capture state (single-threaded tests) ───
 
 var last_run_args: [][]const u8 = &.{};
-fn captureRun(_: *Command, a: [][]const u8) void {
+fn captureRun(ev: @import("command.zig").Exec, _: *Command, a: [][]const u8) void {
+    _ = ev;
     last_run_args = a;
 }
 
@@ -26,9 +30,10 @@ var hook_len: usize = 0;
 fn hookReset() void {
     hook_len = 0;
 }
-fn recHook(comptime mark: u8) *const fn (*Command, [][]const u8) void {
+fn recHook(comptime mark: u8) RunFunc {
     return struct {
-        fn f(_: *Command, _: [][]const u8) void {
+        fn f(ev: Exec, _: *Command, _: [][]const u8) void {
+            _ = ev;
             if (hook_len < hook_log.len) {
                 hook_log[hook_len] = mark;
                 hook_len += 1;
@@ -36,9 +41,10 @@ fn recHook(comptime mark: u8) *const fn (*Command, [][]const u8) void {
         }
     }.f;
 }
-fn recHookE(comptime mark: u8, comptime fails: bool) *const fn (*Command, [][]const u8) anyerror!void {
+fn recHookE(comptime mark: u8, comptime fails: bool) RunEFunc {
     return struct {
-        fn f(_: *Command, _: [][]const u8) anyerror!void {
+        fn f(ev: Exec, _: *Command, _: [][]const u8) anyerror!void {
+            _ = ev;
             if (hook_len < hook_log.len) {
                 hook_log[hook_len] = mark;
                 hook_len += 1;

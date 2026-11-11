@@ -279,7 +279,8 @@ test "hasHelpSubCommands" {
     try std.testing.expect(root.hasHelpSubCommands());
 }
 
-fn emptyRunE(cmd: *Command, args: [][]const u8) anyerror!void {
+fn emptyRunE(ev: @import("command.zig").Exec, cmd: *Command, args: [][]const u8) anyerror!void {
+    _ = ev;
     _ = cmd;
     _ = args;
 }
@@ -759,27 +760,32 @@ test "hooks receive positional args" {
     var cmd = Command{
         .use = "c",
         .persistent_pre_run = struct {
-            fn run(_: *Command, args: [][]const u8) void {
+            fn run(ev: @import("command.zig").Exec, _: *Command, args: [][]const u8) void {
+                _ = ev;
                 _ = args;
             }
         }.run,
         .pre_run = struct {
-            fn run(_: *Command, args: [][]const u8) void {
+            fn run(ev: @import("command.zig").Exec, _: *Command, args: [][]const u8) void {
+                _ = ev;
                 _ = args;
             }
         }.run,
         .run = struct {
-            fn run(_: *Command, args: [][]const u8) void {
+            fn run(ev: @import("command.zig").Exec, _: *Command, args: [][]const u8) void {
+                _ = ev;
                 _ = args;
             }
         }.run,
         .post_run = struct {
-            fn run(_: *Command, args: [][]const u8) void {
+            fn run(ev: @import("command.zig").Exec, _: *Command, args: [][]const u8) void {
+                _ = ev;
                 _ = args;
             }
         }.run,
         .persistent_post_run = struct {
-            fn run(_: *Command, args: [][]const u8) void {
+            fn run(ev: @import("command.zig").Exec, _: *Command, args: [][]const u8) void {
+                _ = ev;
                 _ = args;
             }
         }.run,
@@ -1187,7 +1193,8 @@ test "strip flags keeps positional args only" {
 // call, and `args` points at the caller's (static) input slice, so it stays valid.
 var raw_run_args: [][]const u8 = &.{};
 
-fn captureRunArgs(cmd: *Command, args: [][]const u8) void {
+fn captureRunArgs(ev: @import("command.zig").Exec, cmd: *Command, args: [][]const u8) void {
+    _ = ev;
     _ = cmd;
     raw_run_args = args;
 }

@@ -71,11 +71,12 @@ pub fn assertNoErr(e: anyerror!void) !void {
     };
 }
 
-pub fn makeCommand(use: []const u8, run_fn: ?*const fn (*Command, [][]const u8) void) Command {
+pub fn makeCommand(use: []const u8, run_fn: ?@import("command.zig").RunFunc) Command {
     return .{ .use = use, .run = run_fn };
 }
 
-pub fn emptyRun(cmd: *Command, args: [][]const u8) void {
+pub fn emptyRun(ev: @import("command.zig").Exec, cmd: *Command, args: [][]const u8) void {
+    _ = ev;
     _ = cmd;
     _ = args;
 }

@@ -11,14 +11,16 @@ pub fn init(gpa: std.mem.Allocator, cmd: *Command, ls_cmd: *Command, create_cmd:
 fn io() std.Io {
     return @import("std").Io.Threaded.global_single_threaded.*.io();
 }
-fn lsFn(_: *Command, _: [][]const u8) void {
+fn lsFn(ev: cobra.Exec, _: *Command, _: [][]const u8) void {
+    _ = ev;
     var b: [256]u8 = undefined;
     var ow = std.Io.File.Writer.init(std.Io.File.stdout(), io(), &b);
     const w = &ow.interface;
     w.print("VOLUME NAME\n", .{}) catch {};
     ow.flush() catch {};
 }
-fn createFn(_: *Command, args: [][]const u8) void {
+fn createFn(ev: cobra.Exec, _: *Command, args: [][]const u8) void {
+    _ = ev;
     var b: [256]u8 = undefined;
     var ow = std.Io.File.Writer.init(std.Io.File.stdout(), io(), &b);
     const w = &ow.interface;

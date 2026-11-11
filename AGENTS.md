@@ -39,7 +39,7 @@ Do NOT use `.path` or tarball URLs. Only `git+https://` format works correctly w
 
 - **Zig 0.17.0 only** - Uses new build system (configurer/maker separation), `@backingInt`/`@fromBackingInt`, `SafeAllocator`
 - **Stack-lifetime Commands** - User Command instances must not be heap-allocated (exception: library-internal `help`/`completion`/`__complete` commands are heap-allocated via gpa and freed in `deinit(gpa)`)
-- **No global execution state** - Internal commands receive `Exec{ io, gpa }` as a parameter via `Command.internal_run_e` (set only by library init). Public `RunFunc`/`RunEFunc`/hook signatures take no environment parameter (Go parity) and must not reintroduce any module-level io/allocator staging
+- **Explicit Exec threading** - Side-effect callbacks (RunFunc/RunEFunc, pre/post hooks, help/usage/flag-error overrides) take `ev: Exec` (io + allocator) as first parameter, threaded from `execute()` — Zig's explicit alternative to Go closures. Pure-data callbacks (PositionalArgs validators, CompletionFunc) take no Exec. Never reintroduce module-level io/allocator staging.
 - **Test pattern** - Tests use `std.testing.allocator`, not custom allocators
 - **Module exposure** - Library uses `b.addModule()` in build.zig, dependencies access via `dep.module()`
 
